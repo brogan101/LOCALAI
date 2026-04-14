@@ -17,6 +17,9 @@ import {
 import {
   sovereignEdit, proposeSelfEdit, triggerServerRestart,
 } from "../lib/self-edit.js";
+import {
+  runCommand, runFile, selfHealingRun, diagnoseError,
+} from "../lib/file-execution-agent.js";
 import { taskQueue } from "../lib/task-queue.js";
 import { thoughtLog } from "../lib/thought-log.js";
 
@@ -585,6 +588,69 @@ router.post("/system/macros/:name/run", async (req, res) => {
   const { name } = req.params;
   const result = await runMacro(name);
   return res.json(result);
+});
+
+// ── File Execution Agent ──────────────────────────────────────────────────────
+
+// POST /system/exec/run — run an arbitrary shell command
+router.post("/system/exec/run", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const command     = typeof body.command     === "string" ? body.command.trim()  : "";
+  const cwd         = typeof body.cwd         === "string" ? body.cwd.trim()      : undefined;
+  const timeoutMs   = typeof body.timeoutMs   === "number" ? body.timeoutMs       : 60_000;
+  if (!command) return res.status(400).json({ success: false, message: "command is required" });
+  try {
+    const result = await runCommand(command, { cwd, timeoutMs, streamToThoughts: true });
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/exec/file — run a script file
+router.post("/system/exec/file", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const filePath  = typeof body.filePath  === "string" ? body.filePath.trim()  : "";
+  const cwd       = typeof body.cwd       === "string" ? body.cwd.trim()       : undefined;
+  const timeoutMs = typeof body.timeoutMs === "number" ? body.timeoutMs        : 60_000;
+  if (!filePath) return res.status(400).json({ success: false, message: "filePath is required" });
+  try {
+    const result = await runFile(filePath, { cwd, timeoutMs, streamToThoughts: true });
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/exec/self-heal — run a file with automatic LLM repair on failure
+router.post("/system/exec/self-heal", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const filePath    = typeof body.filePath    === "string" ? body.filePath.trim()    : "";
+  const cwd         = typeof body.cwd         === "string" ? body.cwd.trim()         : undefined;
+  const timeoutMs   = typeof body.timeoutMs   === "number" ? body.timeoutMs          : 60_000;
+  const maxAttempts = typeof body.maxAttempts === "number" ? body.maxAttempts        : 3;
+  if (!filePath) return res.status(400).json({ success: false, message: "filePath is required" });
+  try {
+    const result = await selfHealingRun(filePath, { cwd, timeoutMs, streamToThoughts: true }, maxAttempts);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/exec/diagnose — ask LLM to explain a script error
+router.post("/system/exec/diagnose", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const stderr     = typeof body.stderr     === "string" ? body.stderr     : "";
+  const sourceCode = typeof body.sourceCode === "string" ? body.sourceCode : "";
+  const filePath   = typeof body.filePath   === "string" ? body.filePath   : "unknown";
+  if (!stderr) return res.status(400).json({ success: false, message: "stderr is required" });
+  try {
+    const result = await diagnoseError(stderr, sourceCode, filePath);
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 export default router;

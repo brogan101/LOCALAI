@@ -16,6 +16,7 @@
 
 import os from "os";
 import path from "path";
+import { fileURLToPath } from "url";
 import { existsSync, readFileSync } from "fs";
 import { exec as cpExec } from "child_process";
 import { promisify } from "util";
@@ -24,12 +25,14 @@ import { logger } from "./logger.js";
 import { thoughtLog } from "./thought-log.js";
 
 const execAsync = promisify(cpExec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
 function repoRoot(): string {
-  // __dirname is polyfilled in the esbuild bundle banner
-  return path.resolve(__dirname, "..", "..", "..");
+  // Walk up from src/lib → src → api-server package root
+  return path.resolve(__dirname, "..", "..");
 }
 
 function processManifestPath(): string {

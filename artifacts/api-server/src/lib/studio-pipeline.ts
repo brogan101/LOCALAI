@@ -99,11 +99,13 @@ export interface ImageGenStatus {
   preferredBackend: "comfyui" | "sdwebui" | "none";
 }
 
+export type ImageStyle = "photorealistic" | "anime" | "oil-painting" | "sketch" | "cinematic";
+
 export interface PromptArchitectResult {
   originalPrompt: string;
   expandedPrompt: string;
   negativePrompt: string;
-  style: string;
+  style: ImageStyle;
   model: string;
   expandedAt: string;
 }
@@ -469,7 +471,7 @@ export async function getImageGenStatus(): Promise<ImageGenStatus> {
  */
 export async function expandImagePrompt(
   basicPrompt: string,
-  style: "photorealistic" | "anime" | "oil-painting" | "sketch" | "cinematic" = "photorealistic",
+  style: ImageStyle = "photorealistic",
 ): Promise<PromptArchitectResult> {
   const model = await getPreferredModel(false);
   const prompt = [
@@ -614,7 +616,7 @@ export async function generateImage(
   basicPrompt: string,
   options: {
     expandPrompt?: boolean;
-    style?: PromptArchitectResult["style"];
+    style?: ImageStyle;
     steps?: number;
     cfgScale?: number;
     width?: number;

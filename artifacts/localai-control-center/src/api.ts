@@ -282,6 +282,17 @@ export const system = {
   macros:       () => get<{ macros: unknown[] }>("/system/macros"),
   runMacro:     (name: string) => post<{ success: boolean; stepsExecuted: number; error?: string }>(`/system/macros/${encodeURIComponent(name)}/run`),
   windows:      (pattern?: string) => get<{ windows: unknown[] }>(`/system/windows${pattern ? `?pattern=${encodeURIComponent(pattern)}` : ""}`),
+
+  // ── File Execution Agent ───────────────────────────────────────────────────
+  execRun:      (command: string, cwd?: string, timeoutMs?: number) =>
+    post<ExecRunResult>("/system/exec/run", { command, cwd, timeoutMs }),
+  execFile:     (filePath: string, cwd?: string, timeoutMs?: number) =>
+    post<ExecRunResult>("/system/exec/file", { filePath, cwd, timeoutMs }),
+  execSelfHeal: (filePath: string, cwd?: string, maxAttempts?: number) =>
+    post<SelfHealResult>("/system/exec/self-heal", { filePath, cwd, maxAttempts }),
+  execDiagnose: (stderr: string, sourceCode?: string, filePath?: string) =>
+    post<{ success: boolean; rootCause: string; explanation: string; suggestions: string[]; model: string }>(
+      "/system/exec/diagnose", { stderr, sourceCode, filePath }),
 };
 
 // ── Workspace ─────────────────────────────────────────────────────────────────
@@ -291,6 +302,35 @@ export const workspace = {
   readiness:   () => get<{ overallStatus: string; items: unknown[]; recommendations: string[] }>("/workspace/readiness"),
   templates:   () => get<{ templates: unknown[] }>("/workspace/templates"),
 };
+
+// ── Execution agent types ─────────────────────────────────────────────────────
+
+export interface ExecRunResult {
+  success:    boolean;
+  exitCode:   number | null;
+  stdout:     string;
+  stderr:     string;
+  durationMs: number;
+  command:    string;
+  timedOut:   boolean;
+}
+
+export interface RepairAttempt {
+  attempt:      number;
+  errorSummary: string;
+  proposedFix?: string;
+  appliedFix:   boolean;
+  runAfterFix:  ExecRunResult;
+}
+
+export interface SelfHealResult {
+  success:       boolean;
+  attempts:      number;
+  finalRun:      ExecRunResult;
+  repairs:       RepairAttempt[];
+  filePath:      string;
+  finalContent?: string;
+}
 
 // ── Studio pipeline types ─────────────────────────────────────────────────────
 
@@ -318,11 +358,13 @@ export interface ImageGenStatus {
   preferredBackend: "comfyui" | "sdwebui" | "none";
 }
 
+export type ImageStyle = "photorealistic" | "anime" | "oil-painting" | "sketch" | "cinematic";
+
 export interface PromptArchitectResult {
   originalPrompt: string;
   expandedPrompt: string;
   negativePrompt: string;
-  style: string;
+  style: ImageStyle;
   model: string;
   expandedAt: string;
 }

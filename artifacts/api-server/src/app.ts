@@ -26,7 +26,9 @@ const pinoHttpOptions: PinoHttpOptions = {
   },
 };
 
-app.use(pinoHttp(pinoHttpOptions));
+// pino-http v10 ESM types don't expose a call signature — runtime is fine
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+app.use((pinoHttp as any)(pinoHttpOptions));
 
 // ── Standard middleware ───────────────────────────────────────────────────────
 
