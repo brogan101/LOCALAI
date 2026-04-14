@@ -75,7 +75,9 @@ export interface GatewayTagsResult {
 
 export interface SovereignState {
   activeGoal?: string;
+  activeAgentName?: string;
   activeStep: number;
+  currentStepDescription?: string;
   totalSteps: number;
   executionPlan: string[];
   taskCategory?: "coding" | "sysadmin" | "hardware" | "general";

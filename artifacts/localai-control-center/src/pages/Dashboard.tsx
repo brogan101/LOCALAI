@@ -357,9 +357,9 @@ export default function Dashboard() {
             icon={Cpu}
           />
           <StatCard
-            label="Task Category"
-            value={sovereign?.taskCategory ? sovereign.taskCategory.charAt(0).toUpperCase() + sovereign.taskCategory.slice(1) : "Idle"}
-            sub={sovereign?.activeGoal ? `${sovereign.activeStep + 1}/${sovereign.totalSteps} steps` : "No active goal"}
+            label="Active Agent"
+            value={sovereign?.activeAgentName ?? (sovereign?.taskCategory ? sovereign.taskCategory.charAt(0).toUpperCase() + sovereign.taskCategory.slice(1) : "Idle")}
+            sub={sovereign?.currentStepDescription ?? (sovereign?.activeGoal ? `Step ${sovereign.activeStep + 1} of ${sovereign.totalSteps}` : "No active goal")}
             icon={Target}
             accent={categoryColor}
           />

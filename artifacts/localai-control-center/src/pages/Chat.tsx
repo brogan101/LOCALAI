@@ -17,10 +17,13 @@ import api, { type ChatMessage, type SupervisorInfo } from "../api.js";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface StreamChunk {
-  delta?: string;
+  token?: string;
   done?: boolean;
   model?: string;
   supervisor?: SupervisorInfo;
+  route?: unknown;
+  switched?: boolean;
+  context?: unknown;
   error?: string;
 }
 
@@ -307,8 +310,8 @@ export default function ChatPage() {
             if (chunk.error) throw new Error(chunk.error);
             if (chunk.supervisor) supervisor = chunk.supervisor;
             if (chunk.model) responseModel = chunk.model;
-            if (chunk.delta) {
-              collectedText += chunk.delta;
+            if (chunk.token) {
+              collectedText += chunk.token;
               setMessages(prev => {
                 const next = [...prev];
                 const last = next[next.length - 1];
