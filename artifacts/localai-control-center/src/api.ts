@@ -514,9 +514,9 @@ export const systemExtra = {
   focusWindow:   (windowId: string) =>
     post<{ success: boolean }>("/system/windows/focus", { windowId }),
   registerMacro: (macro: unknown) => post<{ success: boolean }>("/system/macros", macro),
-  updatesCheck:  () => get<{ updates: unknown[]; checkedAt: string }>("/system/updates/check"),
-  updatesRun:    (components?: string[]) =>
-    post<{ success: boolean; results: unknown[] }>("/system/updates/run", { components }),
+  updatesCheck:  () => get<{ items: Array<{ id: string; name: string; category: string; currentVersion: string; availableVersion: string; updateAvailable: boolean; status: string }>; checkedAt: string; updatesAvailable: number }>("/system/updates/check"),
+  updatesRun:    (itemIds?: string[], updateAll?: boolean) =>
+    post<{ success: boolean; results: unknown[] }>("/system/updates/run", { itemIds, updateAll: updateAll ?? !itemIds?.length }),
 };
 
 // ── Workspace (additional endpoints) ─────────────────────────────────────────
@@ -860,7 +860,7 @@ export const stack = {
     post<{ success: boolean; message: string }>(`/stack/components/${encodeURIComponent(componentId)}/stop`),
   restartComponent:(componentId: string) =>
     post<{ success: boolean; message: string }>(`/stack/components/${encodeURIComponent(componentId)}/restart`),
-  backup:          () => post<{ success: boolean; backupPath: string }>("/stack/backup"),
+  backup:          () => post<{ success: boolean; message: string }>("/stack/backup"),
   githubAuth:      () => post<{ success: boolean; message: string }>("/stack/github-auth"),
   githubStatus:    () => get<{ authenticated: boolean; username?: string }>("/stack/github-status"),
 };
@@ -905,17 +905,16 @@ export interface RepairHealthResult {
 export interface RepairLogEntry {
   id: string;
   timestamp: string;
-  component: string;
   action: string;
-  status: string;
+  success: boolean;
   message: string;
 }
 
 export const repair = {
   health:               () => get<RepairHealthResult>("/repair/health"),
-  run:                  (componentIds: string[]) =>
-    post<{ success: boolean; results: unknown[] }>("/repair/run", { componentIds }),
-  log:                  () => get<{ entries: RepairLogEntry[] }>("/repair/log"),
+  run:                  (ids: string[], mode?: "selective" | "all-broken" | "all") =>
+    post<{ success: boolean; results: unknown[] }>("/repair/run", { ids, mode }),
+  log:                  () => get<{ log: RepairLogEntry[] }>("/repair/log"),
   diagnoseIntegration:  (id: string) =>
     post<{ success: boolean; diagnosis: string }>(`/repair/diagnose-integration/${encodeURIComponent(id)}`),
   detectProjectContext: (projectPath: string) =>
@@ -946,16 +945,16 @@ export interface UpdaterModelState {
 
 export const updater = {
   manifest:          () => get<{ models: Record<string, UpdaterModelState> }>("/updater/manifest"),
-  check:             (modelNames?: string[]) =>
-    post<{ success: boolean; results: unknown[] }>("/updater/check", { modelNames }),
-  update:            (modelName: string) =>
-    post<{ success: boolean; jobId: string }>("/updater/update", { modelName }),
+  check:             (scope?: "all" | "tools" | "models") =>
+    post<{ success: boolean; results: Array<{ id: string; type: string; name: string; installed: string; available: string; updateAvailable: boolean }>; totalUpdates: number; checkedAt: string }>("/updater/check", { scope: scope ?? "all" }),
+  update:            (ids: string[]) =>
+    post<{ success: boolean; launched: boolean; message: string }>("/updater/update", { ids }),
   rollbackModel:     (modelName: string) =>
     post<{ success: boolean; message: string }>(`/updater/rollback/${encodeURIComponent(modelName)}`),
   modelStates:       () => get<{ states: Record<string, UpdaterModelState> }>("/updater/model-states"),
   updateModelState:  (modelName: string, state: Partial<UpdaterModelState>) =>
     req<{ success: boolean }>("PATCH", `/updater/model-states/${encodeURIComponent(modelName)}`, state),
-  backupSettings:    () => post<{ success: boolean; backupPath: string }>("/updater/backup-settings"),
+  backupSettings:    () => post<{ success: boolean; backupId: string; backupDir: string; files: string[] }>("/updater/backup-settings"),
   schedule:          () => get<{ schedule: unknown }>("/updater/schedule"),
   setSchedule:       (schedule: unknown) => put<{ success: boolean }>("/updater/schedule", { schedule }),
 };

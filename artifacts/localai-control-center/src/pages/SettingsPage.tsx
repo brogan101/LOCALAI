@@ -286,12 +286,6 @@ function UsageSection() {
     staleTime: 60_000,
   });
 
-  const estimateQ = useQuery({
-    queryKey: ["usage-estimate"],
-    queryFn: () => api.usage.estimate(),
-    staleTime: 60_000,
-  });
-
   const purgeMut = useMutation({
     mutationFn: () => api.usage.purge(),
     onSuccess: () => {
@@ -302,11 +296,12 @@ function UsageSection() {
 
   type UsageDay = { date?: string; totalTokens?: number; promptTokens?: number; completionTokens?: number; requests?: number };
   type TodayData = { date?: string; totalTokens?: number; promptTokens?: number; completionTokens?: number; requests?: number; byModel?: Record<string, unknown> };
-  type EstimateData = { estimatedMonthlyCost?: number; estimatedDailyAverage?: number; currency?: string };
 
   const today = todayQ.data as TodayData | null;
   const history = (historyQ.data as { days?: UsageDay[] } | null)?.days ?? [];
-  const estimate = estimateQ.data as EstimateData | null;
+  const avgDailyTokens = history.length > 0
+    ? Math.round(history.reduce((sum, d) => sum + (d.totalTokens ?? 0), 0) / history.length)
+    : null;
 
   return (
     <Card>
@@ -353,17 +348,14 @@ function UsageSection() {
           </div>
         )}
 
-        {/* Estimate */}
-        {estimate?.estimatedMonthlyCost !== undefined && (
+        {/* 7-day average */}
+        {avgDailyTokens !== null && (
           <div className="text-xs p-3 rounded-lg"
             style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
-            <span style={{ color: "var(--color-muted)" }}>Estimated monthly cost: </span>
+            <span style={{ color: "var(--color-muted)" }}>7-day avg: </span>
             <span className="font-semibold" style={{ color: "var(--color-foreground)" }}>
-              {estimate.currency ?? "$"}{estimate.estimatedMonthlyCost.toFixed(2)}
+              {avgDailyTokens.toLocaleString()} tokens/day
             </span>
-            {estimate.estimatedDailyAverage !== undefined && (
-              <span style={{ color: "var(--color-muted)" }}> · avg {estimate.currency ?? "$"}{estimate.estimatedDailyAverage.toFixed(2)}/day</span>
-            )}
           </div>
         )}
 

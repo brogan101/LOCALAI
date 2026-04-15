@@ -123,9 +123,9 @@ function StackPanel() {
             <Btn onClick={() => backupMut.mutate()} disabled={backupMut.isPending}>
               <HardDrive size={11} /> {backupMut.isPending ? "Backing up…" : "Backup"}
             </Btn>
-            {backupMut.isSuccess && (backupMut.data as { backupPath?: string })?.backupPath && (
-              <span className="text-xs font-mono" style={{ color: "var(--color-success)" }}>
-                {(backupMut.data as { backupPath: string }).backupPath}
+            {backupMut.isSuccess && backupMut.data?.message && (
+              <span className="text-xs" style={{ color: "var(--color-success)" }}>
+                {backupMut.data.message}
               </span>
             )}
           </div>
@@ -214,8 +214,8 @@ function UpdaterPanel() {
     staleTime: 60_000,
   });
 
-  const checkMut   = useMutation({ mutationFn: () => api.updater.check(), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["updater-manifest"] }); void qc.invalidateQueries({ queryKey: ["updater-model-states"] }); } });
-  const updateMut  = useMutation({ mutationFn: (name: string) => api.updater.update(name), onSuccess: () => void qc.invalidateQueries({ queryKey: ["updater-model-states"] }) });
+  const checkMut   = useMutation({ mutationFn: () => api.updater.check("all"), onSuccess: () => { void qc.invalidateQueries({ queryKey: ["updater-manifest"] }); void qc.invalidateQueries({ queryKey: ["updater-model-states"] }); } });
+  const updateMut  = useMutation({ mutationFn: (name: string) => api.updater.update([name]), onSuccess: () => void qc.invalidateQueries({ queryKey: ["updater-model-states"] }) });
   const rollbackMut= useMutation({ mutationFn: (name: string) => api.updater.rollbackModel(name), onSuccess: () => void qc.invalidateQueries({ queryKey: ["updater-model-states"] }) });
   const backupMut  = useMutation({ mutationFn: () => api.updater.backupSettings() });
 
@@ -302,9 +302,9 @@ function UpdaterPanel() {
         </>
       )}
 
-      {backupMut.isSuccess && (backupMut.data as { backupPath?: string })?.backupPath && (
+      {backupMut.isSuccess && backupMut.data?.backupDir && (
         <div className="px-4 py-2 text-xs" style={{ color: "var(--color-success)" }}>
-          Settings backed up: {(backupMut.data as { backupPath: string }).backupPath}
+          Settings backed up: {backupMut.data.backupDir}
         </div>
       )}
     </Card>
@@ -432,7 +432,7 @@ function RepairLogPanel() {
     },
   });
 
-  const entries: RepairLogEntry[] = logQ.data?.entries ?? [];
+  const entries: RepairLogEntry[] = logQ.data?.log ?? [];
   const repairable: RepairHealthEntry[] = (healthQ.data?.items ?? []).filter(
     (i: RepairHealthEntry) => i.canRepair && i.status !== "ok",
   );
@@ -464,18 +464,16 @@ function RepairLogPanel() {
       )}
 
       {entries.map((e) => {
-        const color = e.status === "success" ? "var(--color-success)"
-          : e.status === "error"   ? "var(--color-error)"
-          : "var(--color-muted)";
+        const color = e.success ? "var(--color-success)" : "var(--color-error)";
         return (
-          <div key={e.id} className="flex items-start gap-3 px-4 py-2.5 text-xs"
+          <div key={`${e.id}-${e.timestamp}`} className="flex items-start gap-3 px-4 py-2.5 text-xs"
             style={{ borderBottom: "1px solid var(--color-border)" }}>
-            {e.status === "success" ? <CheckCircle size={12} style={{ color, flexShrink: 0, marginTop: 1 }} />
-              : e.status === "error" ? <XCircle size={12} style={{ color, flexShrink: 0, marginTop: 1 }} />
-              : <Clock size={12} style={{ color, flexShrink: 0, marginTop: 1 }} />}
+            {e.success
+              ? <CheckCircle size={12} style={{ color, flexShrink: 0, marginTop: 1 }} />
+              : <XCircle size={12} style={{ color, flexShrink: 0, marginTop: 1 }} />}
             <div className="flex-1 min-w-0">
               <div style={{ color: "var(--color-foreground)" }}>
-                <span className="font-medium">{e.component}</span>
+                <span className="font-medium font-mono">{e.id}</span>
                 <span className="mx-1 opacity-50">·</span>
                 <span>{e.action}</span>
               </div>
@@ -499,7 +497,7 @@ function SystemUpdatesPanel() {
 
   const checkMut = useMutation({
     mutationFn: () => api.systemExtra.updatesCheck(),
-    onSuccess: (data) => setResults((data as { updates?: unknown[] }).updates ?? []),
+    onSuccess: (data) => setResults(data.items ?? []),
     onError: (e) => setError(e instanceof Error ? e.message : "Check failed"),
   });
 
@@ -542,16 +540,16 @@ function SystemUpdatesPanel() {
         {results !== null && results.length > 0 && (
           <div className="space-y-2">
             {results.map((r, i) => {
-              const item = r as { component?: string; currentVersion?: string; latestVersion?: string; status?: string };
+              const item = r as { id?: string; name?: string; currentVersion?: string; availableVersion?: string; updateAvailable?: boolean };
               return (
                 <div key={i} className="flex items-center gap-3 text-xs px-3 py-2 rounded-lg"
                   style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
                   <AlertTriangle size={12} style={{ color: "var(--color-warn)", flexShrink: 0 }} />
                   <span className="font-medium flex-1" style={{ color: "var(--color-foreground)" }}>
-                    {item.component ?? "Unknown"}
+                    {item.name ?? item.id ?? "Unknown"}
                   </span>
                   {item.currentVersion && <span style={{ color: "var(--color-muted)" }}>{item.currentVersion}</span>}
-                  {item.latestVersion && <span style={{ color: "var(--color-warn)" }}>→ {item.latestVersion}</span>}
+                  {item.availableVersion && <span style={{ color: "var(--color-warn)" }}>→ {item.availableVersion}</span>}
                 </div>
               );
             })}
