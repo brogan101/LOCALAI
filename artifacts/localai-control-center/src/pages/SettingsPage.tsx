@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
-import { Save, RefreshCw, CheckCircle } from "lucide-react";
-import api, { type AppSettings } from "../api.js";
+import { Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2, Code2, AlertCircle } from "lucide-react";
+import api, { type AppSettings, type ContinueRule } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -262,6 +262,315 @@ export default function SettingsPage() {
           <Toggle value={s.notificationsEnabled} onChange={(v) => update("notificationsEnabled", v)} />
         </SettingRow>
       </Card>
+
+      <UsageSection />
+      <ContinueRulesSection />
     </div>
+  );
+}
+
+// ── Usage Section ─────────────────────────────────────────────────────────────
+
+function UsageSection() {
+  const qc = useQueryClient();
+
+  const todayQ = useQuery({
+    queryKey: ["usage-today"],
+    queryFn: () => api.usage.today(),
+    staleTime: 30_000,
+  });
+
+  const historyQ = useQuery({
+    queryKey: ["usage-history"],
+    queryFn: () => api.usage.history(7),
+    staleTime: 60_000,
+  });
+
+  const estimateQ = useQuery({
+    queryKey: ["usage-estimate"],
+    queryFn: () => api.usage.estimate(),
+    staleTime: 60_000,
+  });
+
+  const purgeMut = useMutation({
+    mutationFn: () => api.usage.purge(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["usage-today"] });
+      void qc.invalidateQueries({ queryKey: ["usage-history"] });
+    },
+  });
+
+  type UsageDay = { date?: string; totalTokens?: number; promptTokens?: number; completionTokens?: number; requests?: number };
+  type TodayData = { date?: string; totalTokens?: number; promptTokens?: number; completionTokens?: number; requests?: number; byModel?: Record<string, unknown> };
+  type EstimateData = { estimatedMonthlyCost?: number; estimatedDailyAverage?: number; currency?: string };
+
+  const today = todayQ.data as TodayData | null;
+  const history = (historyQ.data as { days?: UsageDay[] } | null)?.days ?? [];
+  const estimate = estimateQ.data as EstimateData | null;
+
+  return (
+    <Card>
+      <SectionHeader title="Usage & Token Tracking" />
+      <div className="p-4 space-y-4">
+        {/* Today summary */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { label: "Today tokens", value: today?.totalTokens?.toLocaleString() ?? "—" },
+            { label: "Prompt", value: today?.promptTokens?.toLocaleString() ?? "—" },
+            { label: "Completion", value: today?.completionTokens?.toLocaleString() ?? "—" },
+            { label: "Requests", value: today?.requests?.toLocaleString() ?? "—" },
+          ].map(({ label, value }) => (
+            <div key={label} className="rounded-lg p-3 text-center"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+              <div className="text-xs mb-0.5" style={{ color: "var(--color-muted)" }}>{label}</div>
+              <div className="font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 7-day history bar */}
+        {history.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold mb-2 flex items-center gap-1.5"
+              style={{ color: "var(--color-muted)" }}>
+              <BarChart2 size={11} /> 7-day token history
+            </div>
+            <div className="flex items-end gap-1 h-12">
+              {history.map((day, i) => {
+                const max = Math.max(...history.map(d => d.totalTokens ?? 0), 1);
+                const pct = ((day.totalTokens ?? 0) / max) * 100;
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-0.5" title={`${day.date}: ${day.totalTokens} tokens`}>
+                    <div className="w-full rounded-t"
+                      style={{ height: `${Math.max(pct, 4)}%`, background: "var(--color-accent)", opacity: 0.7 + (i / history.length) * 0.3 }} />
+                    <div className="text-xs" style={{ color: "var(--color-muted)", fontSize: 9 }}>
+                      {day.date ? new Date(day.date).toLocaleDateString(undefined, { weekday: "narrow" }) : ""}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Estimate */}
+        {estimate?.estimatedMonthlyCost !== undefined && (
+          <div className="text-xs p-3 rounded-lg"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+            <span style={{ color: "var(--color-muted)" }}>Estimated monthly cost: </span>
+            <span className="font-semibold" style={{ color: "var(--color-foreground)" }}>
+              {estimate.currency ?? "$"}{estimate.estimatedMonthlyCost.toFixed(2)}
+            </span>
+            {estimate.estimatedDailyAverage !== undefined && (
+              <span style={{ color: "var(--color-muted)" }}> · avg {estimate.currency ?? "$"}{estimate.estimatedDailyAverage.toFixed(2)}/day</span>
+            )}
+          </div>
+        )}
+
+        {/* Purge */}
+        <div className="flex items-center justify-between">
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+            Purge all usage history — cannot be undone
+          </div>
+          <button
+            disabled={purgeMut.isPending}
+            onClick={() => { if (confirm("Purge all usage history?")) purgeMut.mutate(); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+            style={{
+              background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+              color: "var(--color-error)",
+              border: "1px solid color-mix(in srgb, var(--color-error) 25%, transparent)",
+              opacity: purgeMut.isPending ? 0.6 : 1,
+            }}>
+            <Trash2 size={11} /> {purgeMut.isPending ? "Purging…" : "Purge History"}
+          </button>
+        </div>
+        {purgeMut.isSuccess && (
+          <div className="text-xs" style={{ color: "var(--color-success)" }}>
+            Purged {(purgeMut.data as { removed?: number })?.removed ?? 0} records
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ── Continue.dev Rules ────────────────────────────────────────────────────────
+
+function ContinueRulesSection() {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState<{ filename: string; content: string } | null>(null);
+  const [newFilename, setNewFilename] = useState("");
+  const [newContent, setNewContent] = useState("");
+  const [showNew, setShowNew] = useState(false);
+
+  const rulesQ = useQuery({
+    queryKey: ["continue-rules"],
+    queryFn: () => api.continueApi.rules(),
+    staleTime: 30_000,
+  });
+
+  const configQ = useQuery({
+    queryKey: ["continue-config"],
+    queryFn: () => api.continueApi.config(),
+    staleTime: 60_000,
+  });
+
+  const saveMut = useMutation({
+    mutationFn: ({ filename, content }: { filename: string; content: string }) =>
+      api.continueApi.saveRule(filename, content),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["continue-rules"] });
+      setEditing(null);
+      setShowNew(false);
+      setNewFilename("");
+      setNewContent("");
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (filename: string) => api.continueApi.deleteRule(filename),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["continue-rules"] }),
+  });
+
+  const rules: ContinueRule[] = rulesQ.data?.rules ?? [];
+  const config = configQ.data;
+
+  return (
+    <Card>
+      <SectionHeader title="Continue.dev Rules" />
+      <div className="p-4 space-y-3">
+        {/* Config status */}
+        {config && (
+          <div className="flex items-center gap-2 text-xs p-2.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+            {config.configExists
+              ? <CheckCircle size={12} style={{ color: "var(--color-success)" }} />
+              : <AlertCircle size={12} style={{ color: "var(--color-warn)" }} />}
+            <span style={{ color: config.configExists ? "var(--color-success)" : "var(--color-warn)" }}>
+              {config.configExists ? "config.json found" : "No config.json"}
+            </span>
+            <span className="mx-1 opacity-50" style={{ color: "var(--color-muted)" }}>·</span>
+            <span className="font-mono truncate" style={{ color: "var(--color-muted)" }}>{config.configPath}</span>
+            {config.models.length > 0 && (
+              <span className="ml-auto shrink-0" style={{ color: "var(--color-muted)" }}>
+                {config.models.length} model{config.models.length !== 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Rules list */}
+        {rules.length === 0 && !rulesQ.isLoading && (
+          <div className="text-sm text-center py-4" style={{ color: "var(--color-muted)" }}>
+            No rules yet — add one below
+          </div>
+        )}
+
+        {rules.map((rule) => (
+          <div key={rule.filename} className="rounded-lg overflow-hidden"
+            style={{ border: "1px solid var(--color-border)" }}>
+            {editing?.filename === rule.filename ? (
+              <div className="p-3 space-y-2">
+                <textarea
+                  value={editing.content}
+                  onChange={(e) => setEditing(ed => ed ? { ...ed, content: e.target.value } : null)}
+                  rows={6}
+                  className="w-full px-3 py-2 rounded-lg text-xs resize-none font-mono"
+                  style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+                />
+                <div className="flex gap-2">
+                  <button
+                    disabled={saveMut.isPending}
+                    onClick={() => saveMut.mutate({ filename: editing.filename, content: editing.content })}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+                    style={{ background: "var(--color-accent)", color: "#fff", opacity: saveMut.isPending ? 0.6 : 1 }}>
+                    <Save size={10} /> {saveMut.isPending ? "Saving…" : "Save"}
+                  </button>
+                  <button onClick={() => setEditing(null)}
+                    className="px-3 py-1.5 rounded-lg text-xs"
+                    style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3 px-3 py-2">
+                <Code2 size={12} style={{ color: "var(--color-accent)", flexShrink: 0 }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-mono" style={{ color: "var(--color-foreground)" }}>{rule.filename}</div>
+                  <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+                    {(rule.sizeBytes / 1024).toFixed(1)} KB · {new Date(rule.modifiedAt).toLocaleDateString()}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setEditing({ filename: rule.filename, content: rule.content })}
+                    className="text-xs px-2 py-0.5 rounded"
+                    style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+                    Edit
+                  </button>
+                  <button
+                    disabled={deleteMut.isPending && deleteMut.variables === rule.filename}
+                    onClick={() => { if (confirm(`Delete rule ${rule.filename}?`)) deleteMut.mutate(rule.filename); }}
+                    className="p-1 rounded"
+                    style={{ background: "color-mix(in srgb, var(--color-error) 10%, transparent)", color: "var(--color-error)" }}>
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* New rule */}
+        {showNew ? (
+          <div className="rounded-lg p-3 space-y-2"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+            <div>
+              <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Filename (e.g. my-rule.md)</div>
+              <input
+                value={newFilename}
+                onChange={(e) => setNewFilename(e.target.value)}
+                placeholder="my-rule.md"
+                className="w-full px-3 py-1.5 rounded-lg text-xs font-mono"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+            </div>
+            <div>
+              <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Content</div>
+              <textarea
+                value={newContent}
+                onChange={(e) => setNewContent(e.target.value)}
+                rows={5}
+                className="w-full px-3 py-2 rounded-lg text-xs font-mono resize-none"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                disabled={!newFilename || !newContent || saveMut.isPending}
+                onClick={() => saveMut.mutate({ filename: newFilename, content: newContent })}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+                style={{ background: "var(--color-accent)", color: "#fff", opacity: (!newFilename || !newContent || saveMut.isPending) ? 0.5 : 1 }}>
+                <Save size={10} /> {saveMut.isPending ? "Saving…" : "Save rule"}
+              </button>
+              <button onClick={() => { setShowNew(false); setNewFilename(""); setNewContent(""); }}
+                className="px-3 py-1.5 rounded-lg text-xs"
+                style={{ background: "var(--color-surface)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowNew(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+            <Plus size={11} /> Add rule
+          </button>
+        )}
+      </div>
+    </Card>
   );
 }

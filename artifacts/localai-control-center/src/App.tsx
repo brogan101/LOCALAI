@@ -17,6 +17,7 @@ import {
   WifiOff,
   AlertTriangle,
   ChevronRight,
+  Server,
 } from "lucide-react";
 import api from "./api.js";
 
@@ -32,6 +33,7 @@ import LogsPage from "./pages/Logs.js";
 import WorkspacePage from "./pages/Workspace.js";
 import StudiosPage from "./pages/Studios.js";
 import SettingsPage from "./pages/SettingsPage.js";
+import OperationsPage from "./pages/Operations.js";
 
 function Placeholder({ title, description }: { title: string; description?: string }) {
   return (
@@ -61,6 +63,7 @@ const NAV_ITEMS = [
   { path: "/cleanup",     label: "Cleanup",      icon: Wrench },
   { path: "/remote",      label: "Remote",       icon: Radio },
   { path: "/integrations",label: "Integrations", icon: Plug },
+  { path: "/operations",  label: "Operations",   icon: Server },
   { path: "/settings",    label: "Settings",     icon: Settings },
 ] as const;
 
@@ -212,6 +215,7 @@ function AppShell() {
           <Route path="/cleanup" component={CleanupPage} />
           <Route path="/remote" component={RemotePage} />
           <Route path="/integrations" component={IntegrationsPage} />
+          <Route path="/operations" component={OperationsPage} />
           <Route path="/settings" component={SettingsPage} />
           <Route>
             <Placeholder title="404 — Page Not Found" description="This route does not exist." />

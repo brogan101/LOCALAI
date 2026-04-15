@@ -1,20 +1,13 @@
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Send,
-  Bot,
-  User,
-  Cpu,
-  Code2,
-  Wrench,
-  Eye,
-  Sparkles,
-  ChevronDown,
-  ChevronRight,
-  AlertCircle,
-  FileCode,
+  Send, Bot, User, Cpu, Code2, Wrench, Eye, Sparkles,
+  ChevronDown, ChevronRight, AlertCircle, FileCode,
+  Database, ToggleLeft, ToggleRight, Search, Brain,
+  FolderOpen, Play,
 } from "lucide-react";
-import api, { type ChatMessage, type SupervisorInfo } from "../api.js";
+import api, { type ChatMessage, type SupervisorInfo, type ContextWorkspaceSummary } from "../api.js";
+import { useLocation } from "wouter";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -105,10 +98,7 @@ function ContextPanel({ ctx }: { ctx: ContextMeta }) {
           <span className="opacity-60 ml-1">· {ctx.workspaceName}</span>
         )}
         <span className="ml-auto">
-          {open
-            ? <ChevronDown size={10} />
-            : <ChevronRight size={10} />
-          }
+          {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
         </span>
       </button>
       {open && (
@@ -126,10 +116,7 @@ function ContextPanel({ ctx }: { ctx: ContextMeta }) {
                 </span>
               )}
               <span className="shrink-0 px-1 rounded"
-                style={{
-                  background: "color-mix(in srgb, var(--color-info) 12%, transparent)",
-                  color: "var(--color-info)",
-                }}>
+                style={{ background: "color-mix(in srgb, var(--color-info) 12%, transparent)", color: "var(--color-info)" }}>
                 {f.score.toFixed(0)}
               </span>
             </div>
@@ -161,7 +148,6 @@ function MessageBubble({ msg }: { msg: Message }) {
 
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : "flex-row"} mb-4`}>
-      {/* Avatar */}
       <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5"
         style={{
           background: isUser
@@ -174,17 +160,12 @@ function MessageBubble({ msg }: { msg: Message }) {
         }
       </div>
 
-      {/* Content */}
       <div className={`flex flex-col max-w-[75%] ${isUser ? "items-end" : "items-start"}`}>
-        {/* Agent label */}
         {!isUser && msg.supervisor && (
-          <div className="flex items-center gap-1.5 mb-1 text-xs"
-            style={{ color }}>
+          <div className="flex items-center gap-1.5 mb-1 text-xs" style={{ color }}>
             {agentIcon(msg.supervisor.category)}
             <span className="font-medium">{agentName(msg.supervisor.category)}</span>
-            {msg.supervisor.toolset && (
-              <span className="opacity-60">· {msg.supervisor.toolset}</span>
-            )}
+            {msg.supervisor.toolset && <span className="opacity-60">· {msg.supervisor.toolset}</span>}
             {msg.model && (
               <span className="ml-1 px-1.5 py-0 rounded text-xs"
                 style={{ background: `color-mix(in srgb, ${color} 12%, transparent)` }}>
@@ -194,7 +175,6 @@ function MessageBubble({ msg }: { msg: Message }) {
           </div>
         )}
 
-        {/* Bubble */}
         <div className="rounded-xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words"
           style={{
             background: isUser
@@ -213,7 +193,6 @@ function MessageBubble({ msg }: { msg: Message }) {
           )}
         </div>
 
-        {/* Execution plan summary */}
         {!isUser && msg.supervisor?.steps && msg.supervisor.steps.length > 0 && !msg.streaming && (
           <div className="mt-2 text-xs rounded-lg px-3 py-2"
             style={{ background: "var(--color-elevated)", color: "var(--color-muted)", maxWidth: "100%" }}>
@@ -230,7 +209,6 @@ function MessageBubble({ msg }: { msg: Message }) {
           </div>
         )}
 
-        {/* Context files panel */}
         {!isUser && msg.context && !msg.streaming && (
           <ContextPanel ctx={msg.context} />
         )}
@@ -241,13 +219,7 @@ function MessageBubble({ msg }: { msg: Message }) {
 
 // ── Model selector ────────────────────────────────────────────────────────────
 
-function ModelSelector({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
+function ModelSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false);
   const { data } = useQuery({
     queryKey: ["chatModels"],
@@ -263,11 +235,7 @@ function ModelSelector({
       <button
         onClick={() => setOpen(o => !o)}
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors"
-        style={{
-          background: "var(--color-elevated)",
-          color: "var(--color-foreground)",
-          border: "1px solid var(--color-border)",
-        }}>
+        style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }}>
         <Cpu size={11} />
         <span>{label}</span>
         <ChevronDown size={10} className={`transition-transform ${open ? "rotate-180" : ""}`} />
@@ -279,10 +247,7 @@ function ModelSelector({
           <button
             onClick={() => { onChange(""); setOpen(false); }}
             className="w-full text-left px-3 py-2 text-xs transition-colors hover:opacity-80"
-            style={{
-              background: !value ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent",
-              color: "var(--color-foreground)",
-            }}>
+            style={{ background: !value ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
             Auto-route (Supervisor)
           </button>
           {models.map(m => (
@@ -290,15 +255,179 @@ function ModelSelector({
               key={m.name}
               onClick={() => { onChange(m.name); setOpen(false); }}
               className="w-full text-left px-3 py-2 text-xs transition-colors hover:opacity-80"
-              style={{
-                background: value === m.name ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent",
-                color: "var(--color-foreground)",
-              }}>
+              style={{ background: value === m.name ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
               <span>{m.name}</span>
               {m.paramSize && <span className="ml-1 opacity-50">{m.paramSize}</span>}
             </button>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Workspace selector ────────────────────────────────────────────────────────
+
+function WorkspaceSelector({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const { data } = useQuery({
+    queryKey: ["context-workspaces-chat"],
+    queryFn: () => api.context.workspaces(),
+    staleTime: 60_000,
+  });
+
+  const workspaces: ContextWorkspaceSummary[] = data?.workspaces ?? [];
+  const selected = workspaces.find(w => w.rootPath === value);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs"
+        style={{ background: "var(--color-elevated)", color: selected ? "var(--color-foreground)" : "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+        <FolderOpen size={11} style={{ color: selected ? "var(--color-accent)" : "var(--color-muted)" }} />
+        <span className="max-w-[120px] truncate">{selected?.workspaceName ?? "No workspace"}</span>
+        <ChevronDown size={10} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full mb-1 left-0 z-50 rounded-lg overflow-hidden shadow-xl"
+          style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", minWidth: 220 }}>
+          <button
+            onClick={() => { onChange(""); setOpen(false); }}
+            className="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+            style={{ background: !value ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
+            No workspace scope
+          </button>
+          {workspaces.map(ws => (
+            <button
+              key={ws.rootPath}
+              onClick={() => { onChange(ws.rootPath); setOpen(false); }}
+              className="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+              style={{ background: value === ws.rootPath ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
+              <div className="font-medium">{ws.workspaceName}</div>
+              <div className="opacity-50 font-mono truncate text-xs">{ws.rootPath}</div>
+            </button>
+          ))}
+          {workspaces.length === 0 && (
+            <div className="px-3 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
+              No indexed workspaces — index one in Workspace → Intelligence
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Empty state with real quick actions ───────────────────────────────────────
+
+function EmptyState({
+  workspacePath,
+  useCodeContext,
+  setInput,
+  setWorkspacePath,
+  textareaRef,
+  navigate,
+}: {
+  workspacePath: string;
+  useCodeContext: boolean;
+  setInput: (v: string) => void;
+  setWorkspacePath: (v: string) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  navigate: (path: string) => void;
+}) {
+  const contextQ = useQuery({
+    queryKey: ["context-workspaces-chat"],
+    queryFn: () => api.context.workspaces(),
+    staleTime: 60_000,
+  });
+
+  const workspaces: ContextWorkspaceSummary[] = contextQ.data?.workspaces ?? [];
+  const hasWorkspace = workspacePath && workspaces.some(w => w.rootPath === workspacePath);
+
+  const hints = hasWorkspace
+    ? [
+        `Explain the architecture of ${workspaces.find(w => w.rootPath === workspacePath)?.workspaceName ?? "this project"}`,
+        "Find all exported functions and describe what they do",
+        "What are the main entry points in this codebase?",
+        "List all API routes in this project",
+        "Write a TypeScript utility function based on the existing patterns here",
+      ]
+    : [
+        "Write a TypeScript API endpoint",
+        "List running Docker containers",
+        "Generate OpenSCAD for a bracket",
+        "Explain VRAM guard modes",
+        "Diagnose why a Node.js script fails",
+      ];
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-4">
+      <div className="w-14 h-14 rounded-full flex items-center justify-center"
+        style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)" }}>
+        <Bot size={24} style={{ color: "var(--color-accent)" }} />
+      </div>
+      <div>
+        <div className="font-semibold text-base" style={{ color: "var(--color-foreground)" }}>
+          Sovereign AI ready
+        </div>
+        <div className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>
+          {hasWorkspace
+            ? <>Code context active · responses will use files from <span className="font-medium">{workspaces.find(w => w.rootPath === workspacePath)?.workspaceName}</span></>
+            : <>Select a workspace above to enable code context, or ask any question.</>
+          }
+        </div>
+      </div>
+
+      {/* Prompt hints */}
+      <div className="flex flex-wrap gap-2 justify-center mt-1">
+        {hints.map(hint => (
+          <button
+            key={hint}
+            onClick={() => { setInput(hint); textareaRef.current?.focus(); }}
+            className="text-xs px-3 py-1.5 rounded-lg transition-colors text-left"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+            {hint}
+          </button>
+        ))}
+      </div>
+
+      {/* Workspace quick-select if none chosen */}
+      {!hasWorkspace && workspaces.length > 0 && (
+        <div className="mt-2">
+          <div className="text-xs mb-2" style={{ color: "var(--color-muted)" }}>Activate a workspace for code-aware responses:</div>
+          <div className="flex flex-wrap gap-2 justify-center">
+            {workspaces.slice(0, 4).map(ws => (
+              <button
+                key={ws.rootPath}
+                onClick={() => setWorkspacePath(ws.rootPath)}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg"
+                style={{ background: "color-mix(in srgb, var(--color-accent) 10%, var(--color-elevated))", color: "var(--color-foreground)", border: "1px solid color-mix(in srgb, var(--color-accent) 20%, var(--color-border))" }}>
+                <Database size={11} style={{ color: "var(--color-accent)" }} />
+                {ws.workspaceName}
+                <span className="opacity-50">{ws.fileCount}f</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* No workspaces indexed */}
+      {workspaces.length === 0 && (
+        <button
+          onClick={() => navigate("/workspace")}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg mt-1"
+          style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+          <Brain size={11} /> Index a workspace first → Workspace → Intelligence
+        </button>
       )}
     </div>
   );
@@ -310,26 +439,31 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
+  const [useCodeContext, setUseCodeContext] = useState(false);
   const [sessionId] = useState(() => `session-${Date.now()}`);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [, navigate] = useLocation();
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Auto-resize textarea
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, [input]);
+
+  // When workspace is set, default to enabling context
+  useEffect(() => {
+    if (workspacePath) setUseCodeContext(true);
+    else setUseCodeContext(false);
+  }, [workspacePath]);
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -344,7 +478,6 @@ export default function ChatPage() {
     setMessages(prev => [...prev, userMsg, assistantMsg]);
     setStreaming(true);
 
-    // Build upstream message list (exclude streaming placeholder)
     const chatHistory: ChatMessage[] = [
       ...messages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
       { role: "user", content: text },
@@ -356,7 +489,13 @@ export default function ChatPage() {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: chatHistory, model: model || undefined, sessionId }),
+        body: JSON.stringify({
+          messages: chatHistory,
+          model: model || undefined,
+          sessionId,
+          workspacePath: workspacePath || undefined,
+          useCodeContext: useCodeContext && !!workspacePath,
+        }),
         signal: abortRef.current.signal,
       });
 
@@ -407,18 +546,12 @@ export default function ChatPage() {
         }
       }
 
-      // Finalize
       setMessages(prev => {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last?.role === "assistant") {
           next[next.length - 1] = {
-            ...last,
-            content: collectedText,
-            streaming: false,
-            supervisor,
-            model: responseModel,
-            context: contextMeta,
+            ...last, content: collectedText, streaming: false, supervisor, model: responseModel, context: contextMeta,
           };
         }
         return next;
@@ -427,12 +560,11 @@ export default function ChatPage() {
       if ((err as Error).name === "AbortError") return;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
-      // Remove streaming placeholder
       setMessages(prev => prev.filter(m => !m.streaming));
     } finally {
       setStreaming(false);
     }
-  }, [input, messages, model, sessionId, streaming]);
+  }, [input, messages, model, sessionId, workspacePath, useCodeContext, streaming]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -440,6 +572,15 @@ export default function ChatPage() {
       void send();
     }
   };
+
+  // ── Quick action chips ─────────────────────────────────────────────────────
+  const quickActions: Array<{ label: string; icon: React.ElementType; prompt: string }> = [
+    { label: "Refactor plan",   icon: Brain,     prompt: "Plan a refactor for the current workspace — analyze structure and suggest improvements" },
+    { label: "Search context",  icon: Search,    prompt: "Search the codebase for the main entry points and describe what they do" },
+    { label: "Explain arch",    icon: FolderOpen,prompt: "Explain the high-level architecture of this project" },
+    { label: "Run diagnostics", icon: Wrench,    prompt: "Run a system diagnostic and tell me what needs attention" },
+    { label: "Studio plan",     icon: Play,      prompt: "Generate a vibe coding plan for a new web app" },
+  ];
 
   return (
     <div className="flex flex-col h-screen">
@@ -454,10 +595,7 @@ export default function ChatPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => {
-              setMessages([]);
-              setError(null);
-            }}
+            onClick={() => { setMessages([]); setError(null); }}
             className="text-xs px-3 py-1.5 rounded-lg"
             style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
             Clear
@@ -468,37 +606,14 @@ export default function ChatPage() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
-            <div className="w-14 h-14 rounded-full flex items-center justify-center"
-              style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)" }}>
-              <Bot size={24} style={{ color: "var(--color-accent)" }} />
-            </div>
-            <div>
-              <div className="font-semibold text-base" style={{ color: "var(--color-foreground)" }}>
-                Sovereign AI ready
-              </div>
-              <div className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>
-                Ask anything — coding, sysadmin, hardware, or general tasks.<br />
-                The Supervisor Agent will route to the best model automatically.
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2 justify-center mt-2">
-              {[
-                "Write a TypeScript API endpoint",
-                "List running Docker containers",
-                "Generate OpenSCAD for a bracket",
-                "Explain VRAM guard modes",
-              ].map(hint => (
-                <button
-                  key={hint}
-                  onClick={() => { setInput(hint); textareaRef.current?.focus(); }}
-                  className="text-xs px-3 py-1.5 rounded-lg transition-colors"
-                  style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
-                  {hint}
-                </button>
-              ))}
-            </div>
-          </div>
+          <EmptyState
+            workspacePath={workspacePath}
+            useCodeContext={useCodeContext}
+            setInput={setInput}
+            setWorkspacePath={setWorkspacePath}
+            textareaRef={textareaRef}
+            navigate={navigate}
+          />
         )}
 
         {messages.map((msg, i) => (
@@ -516,8 +631,26 @@ export default function ChatPage() {
         <div ref={bottomRef} />
       </div>
 
+      {/* Quick actions */}
+      {messages.length === 0 && (
+        <div className="shrink-0 px-6 pb-2">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            {quickActions.map((a) => (
+              <button
+                key={a.label}
+                onClick={() => { setInput(a.prompt); textareaRef.current?.focus(); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0"
+                style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+                <a.icon size={11} />
+                {a.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Input area */}
-      <div className="shrink-0 px-6 pb-6 pt-3" style={{ borderTop: "1px solid var(--color-border)" }}>
+      <div className="shrink-0 px-6 pb-6 pt-2" style={{ borderTop: "1px solid var(--color-border)" }}>
         <div className="rounded-xl overflow-hidden"
           style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
           <textarea
@@ -529,15 +662,32 @@ export default function ChatPage() {
             placeholder="Ask anything... (Shift+Enter for newline)"
             rows={1}
             className="w-full px-4 pt-3 pb-2 text-sm resize-none outline-none bg-transparent"
-            style={{
-              color: "var(--color-foreground)",
-              minHeight: 44,
-              maxHeight: 160,
-              lineHeight: 1.5,
-            }}
+            style={{ color: "var(--color-foreground)", minHeight: 44, maxHeight: 160, lineHeight: 1.5 }}
           />
-          <div className="flex items-center justify-between px-3 pb-2.5">
-            <ModelSelector value={model} onChange={setModel} />
+          <div className="flex items-center justify-between px-3 pb-2.5 gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <ModelSelector value={model} onChange={setModel} />
+              <WorkspaceSelector value={workspacePath} onChange={setWorkspacePath} />
+              {/* Code context toggle */}
+              <button
+                disabled={!workspacePath}
+                onClick={() => setUseCodeContext(c => !c)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-40"
+                title={!workspacePath ? "Select a workspace first" : useCodeContext ? "Disable code context" : "Enable code context"}
+                style={{
+                  background: useCodeContext && workspacePath
+                    ? "color-mix(in srgb, var(--color-info) 15%, transparent)"
+                    : "var(--color-elevated)",
+                  color: useCodeContext && workspacePath ? "var(--color-info)" : "var(--color-muted)",
+                  border: `1px solid ${useCodeContext && workspacePath ? "color-mix(in srgb, var(--color-info) 30%, transparent)" : "var(--color-border)"}`,
+                }}>
+                {useCodeContext && workspacePath
+                  ? <ToggleRight size={13} />
+                  : <ToggleLeft size={13} />
+                }
+                Code ctx
+              </button>
+            </div>
             <button
               onClick={() => void send()}
               disabled={!input.trim() || streaming}
@@ -558,7 +708,8 @@ export default function ChatPage() {
           </div>
         </div>
         <div className="text-xs mt-2 text-center" style={{ color: "var(--color-muted)" }}>
-          Press Enter to send · Shift+Enter for newline · model auto-routed by Supervisor Agent
+          Enter to send · Shift+Enter for newline
+          {useCodeContext && workspacePath && <span style={{ color: "var(--color-info)" }}> · code context active</span>}
         </div>
       </div>
     </div>

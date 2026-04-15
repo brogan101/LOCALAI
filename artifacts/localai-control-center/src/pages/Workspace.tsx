@@ -4,7 +4,7 @@ import {
   Folder, FolderOpen, Pin, Trash2, Plus, RefreshCw, ExternalLink,
   CheckCircle, AlertTriangle, XCircle, GitBranch,
   Brain, Search, Play, ChevronDown, ChevronRight,
-  FileCode, Loader2, Database,
+  FileCode, Loader2, Database, Camera, Archive, Copy,
 } from "lucide-react";
 import api, {
   type ContextWorkspaceSummary,
@@ -66,12 +66,18 @@ function ProjectCard({
   onOpen,
   onPin,
   onDelete,
+  onSnapshot,
+  onArchive,
+  onClone,
   busy,
 }: {
   project: WorkspaceProject;
   onOpen: (mode: "vscode" | "terminal" | "vscode-aider") => void;
   onPin: () => void;
   onDelete: () => void;
+  onSnapshot: () => void;
+  onArchive: () => void;
+  onClone: () => void;
   busy: boolean;
 }) {
   const { label: rLabel, color: rColor } = readinessBadge(project.aiReadiness);
@@ -139,7 +145,22 @@ function ProjectCard({
             style={{ background: "var(--color-elevated)", color: project.pinned ? "var(--color-accent)" : "var(--color-muted)" }}>
             <Pin size={13} />
           </button>
-          <button onClick={onDelete} title="Delete"
+          <button onClick={onSnapshot} title="Create snapshot" disabled={busy}
+            className="p-1.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+            <Camera size={13} />
+          </button>
+          <button onClick={onArchive} title="Archive project" disabled={busy}
+            className="p-1.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+            <Archive size={13} />
+          </button>
+          <button onClick={onClone} title="Clone project" disabled={busy}
+            className="p-1.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+            <Copy size={13} />
+          </button>
+          <button onClick={onDelete} title="Remove from registry"
             className="p-1.5 rounded-lg"
             style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
             <Trash2 size={13} />
@@ -763,6 +784,48 @@ export default function WorkspacePage() {
     }
   }
 
+  async function snapshotProject(id: string) {
+    setBusy(id, true);
+    try {
+      const r = await api.workspaceExtra.createSnapshot(id);
+      const snap = r.snapshot as { label?: string; createdAt?: string } | null;
+      setMsg(id, snap ? `Snapshot created${snap.label ? `: ${snap.label}` : ""}` : "Snapshot created");
+    } catch (e) {
+      setMsg(id, e instanceof Error ? e.message : "Snapshot failed");
+    } finally {
+      setBusy(id, false);
+    }
+  }
+
+  async function archiveProject(id: string) {
+    if (!confirm("Archive this project? This will compress it to a zip file.")) return;
+    setBusy(id, true);
+    try {
+      const r = await api.workspaceExtra.archiveProject(id);
+      setMsg(id, `Archived: ${r.archivePath}`);
+    } catch (e) {
+      setMsg(id, e instanceof Error ? e.message : "Archive failed");
+    } finally {
+      setBusy(id, false);
+    }
+  }
+
+  async function cloneProject(id: string, sourcePath: string) {
+    const targetPath = window.prompt(`Clone destination path:`, sourcePath + "-clone");
+    if (!targetPath) return;
+    setBusy(id, true);
+    try {
+      const r = await api.workspaceExtra.cloneProject(id, targetPath);
+      const proj = r.project as { name?: string } | null;
+      setMsg(id, `Cloned${proj?.name ? ` as ${proj.name}` : ""}`);
+      void qc.invalidateQueries({ queryKey: ["workspace-projects"] });
+    } catch (e) {
+      setMsg(id, e instanceof Error ? e.message : "Clone failed");
+    } finally {
+      setBusy(id, false);
+    }
+  }
+
   const projects = (projectsQ.data?.projects ?? []) as WorkspaceProject[];
   const templates = (templatesQ.data?.templates ?? []) as WorkspaceTemplate[];
   const pinned  = projects.filter((p) => p.pinned);
@@ -876,6 +939,9 @@ export default function WorkspacePage() {
                       onOpen={(mode) => openProject(p.id, mode)}
                       onPin={() => pinProject(p.id)}
                       onDelete={() => deleteProject(p.id)}
+                      onSnapshot={() => snapshotProject(p.id)}
+                      onArchive={() => archiveProject(p.id)}
+                      onClone={() => cloneProject(p.id, p.path)}
                     />
                     {messages[p.id] && (
                       <div className="mt-1 text-xs px-2" style={{ color: "var(--color-muted)" }}>{messages[p.id]}</div>
@@ -900,6 +966,9 @@ export default function WorkspacePage() {
                       onOpen={(mode) => openProject(p.id, mode)}
                       onPin={() => pinProject(p.id)}
                       onDelete={() => deleteProject(p.id)}
+                      onSnapshot={() => snapshotProject(p.id)}
+                      onArchive={() => archiveProject(p.id)}
+                      onClone={() => cloneProject(p.id, p.path)}
                     />
                     {messages[p.id] && (
                       <div className="mt-1 text-xs px-2" style={{ color: "var(--color-muted)" }}>{messages[p.id]}</div>

@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Zap, Image, Box, RefreshCw, Play, Loader, CheckCircle, AlertTriangle } from "lucide-react";
-import api, { type CadScriptResult, type ImageGenResult, type ImageGenStatus } from "../api.js";
+import { Zap, Image, Box, RefreshCw, Play, Loader, CheckCircle, AlertTriangle, Code2, Printer } from "lucide-react";
+import api, { type CadScriptResult, type ImageGenResult, type ImageGenStatus, type GCodeOptimizeResult, type PromptArchitectResult } from "../api.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ interface StudioTemplate {
   stack: string[];
 }
 
-type StudioTab = "vibe" | "imagegen" | "cad";
+type StudioTab = "vibe" | "imagegen" | "cad" | "vibecheck";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -426,6 +426,291 @@ function CadTab() {
   );
 }
 
+// ── VibeCheck Tab ─────────────────────────────────────────────────────────────
+
+function VibeCheckTab() {
+  const [studioPath, setStudioPath] = useState("");
+  const [port, setPort] = useState(3000);
+  const [endpointPath, setEndpointPath] = useState("/");
+  const [startCommand, setStartCommand] = useState("");
+  const [result, setResult] = useState<{ success: boolean; result?: { status?: number; body?: string; endpointUrl?: string; error?: string; testedAt?: string } } | null>(null);
+
+  const checkMut = useMutation({
+    mutationFn: () => api.studios.vibeCheck(studioPath, port, endpointPath, startCommand || undefined),
+    onSuccess: (data) => setResult(data),
+  });
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader icon={Code2} title="VibeCheck — Test Running Studio" />
+        <div className="p-4 space-y-4">
+          <div>
+            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Studio path</div>
+            <input
+              value={studioPath}
+              onChange={(e) => setStudioPath(e.target.value)}
+              placeholder="C:\Users\you\LocalAI-Tools\studios\my-app"
+              className="w-full px-3 py-2 rounded-lg text-sm font-mono"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Port</div>
+              <input
+                type="number"
+                value={port}
+                onChange={(e) => setPort(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+            </div>
+            <div>
+              <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Endpoint path</div>
+              <input
+                value={endpointPath}
+                onChange={(e) => setEndpointPath(e.target.value)}
+                placeholder="/"
+                className="w-full px-3 py-2 rounded-lg text-sm font-mono"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+            </div>
+          </div>
+          <div>
+            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Start command (optional — leave empty if already running)</div>
+            <input
+              value={startCommand}
+              onChange={(e) => setStartCommand(e.target.value)}
+              placeholder="npm start"
+              className="w-full px-3 py-2 rounded-lg text-sm font-mono"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+          </div>
+          <button
+            disabled={!studioPath || checkMut.isPending}
+            onClick={() => checkMut.mutate()}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ background: "var(--color-accent)", color: "#fff", opacity: (!studioPath || checkMut.isPending) ? 0.5 : 1 }}>
+            {checkMut.isPending ? <><Loader size={13} className="animate-spin" /> Checking…</> : <><Code2 size={13} /> VibeCheck</>}
+          </button>
+          {checkMut.isError && (
+            <div className="text-xs" style={{ color: "var(--color-error)" }}>
+              {checkMut.error instanceof Error ? checkMut.error.message : "Check failed"}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {result && (
+        <Card>
+          <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+            {result.success
+              ? <CheckCircle size={14} style={{ color: "var(--color-success)" }} />
+              : <AlertTriangle size={14} style={{ color: "var(--color-error)" }} />}
+            <span className="text-sm font-semibold" style={{ color: result.success ? "var(--color-success)" : "var(--color-error)" }}>
+              {result.success ? "Endpoint reachable" : "Check failed"}
+            </span>
+            {result.result?.status && (
+              <span className="text-xs px-2 py-0.5 rounded"
+                style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+                HTTP {result.result.status}
+              </span>
+            )}
+          </div>
+          <div className="p-4 space-y-2 text-xs">
+            {result.result?.endpointUrl && (
+              <div><span style={{ color: "var(--color-muted)" }}>URL: </span>
+                <span className="font-mono" style={{ color: "var(--color-foreground)" }}>{result.result.endpointUrl}</span>
+              </div>
+            )}
+            {result.result?.body && (
+              <pre className="p-2 rounded overflow-x-auto whitespace-pre-wrap max-h-40"
+                style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", fontFamily: "monospace" }}>
+                {result.result.body.slice(0, 500)}
+              </pre>
+            )}
+            {result.result?.error && (
+              <div style={{ color: "var(--color-error)" }}>{result.result.error}</div>
+            )}
+            {result.result?.testedAt && (
+              <div style={{ color: "var(--color-muted)" }}>Tested at {new Date(result.result.testedAt).toLocaleTimeString()}</div>
+            )}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── GCode Optimizer ───────────────────────────────────────────────────────────
+
+function GCodeTab() {
+  const [gcode, setGcode] = useState("");
+  const [printerType, setPrinterType] = useState<"fdm" | "laser">("fdm");
+  const [result, setResult] = useState<GCodeOptimizeResult | null>(null);
+
+  const gcodeOptMut = useMutation({
+    mutationFn: () => api.studios.cad.gcode(gcode, printerType),
+    onSuccess: (data) => { if (data.success) setResult(data.result); },
+  });
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader icon={Printer} title="G-Code Optimizer" />
+        <div className="p-4 space-y-4">
+          <div className="flex gap-2">
+            {(["fdm", "laser"] as const).map((t) => (
+              <button key={t}
+                onClick={() => setPrinterType(t)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium"
+                style={{
+                  background: printerType === t ? "var(--color-accent)" : "var(--color-elevated)",
+                  color: printerType === t ? "#fff" : "var(--color-muted)",
+                  border: `1px solid ${printerType === t ? "var(--color-accent)" : "var(--color-border)"}`,
+                }}>
+                {t === "fdm" ? "FDM Printer" : "Laser Cutter"}
+              </button>
+            ))}
+          </div>
+
+          <div>
+            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Paste G-Code to optimize</div>
+            <textarea
+              value={gcode}
+              onChange={(e) => setGcode(e.target.value)}
+              placeholder={`G28 ; home all axes\nG1 Z5 F5000 ; raise nozzle\n…`}
+              rows={8}
+              className="w-full px-3 py-2 rounded-lg text-sm resize-none font-mono"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+          </div>
+
+          <button
+            disabled={!gcode.trim() || gcodeOptMut.isPending}
+            onClick={() => gcodeOptMut.mutate()}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ background: "var(--color-accent)", color: "#fff", opacity: (!gcode.trim() || gcodeOptMut.isPending) ? 0.5 : 1 }}>
+            {gcodeOptMut.isPending ? <><Loader size={13} className="animate-spin" /> Optimizing…</> : <><Printer size={13} /> Optimize</>}
+          </button>
+          {gcodeOptMut.isError && (
+            <div className="text-xs" style={{ color: "var(--color-error)" }}>
+              {gcodeOptMut.error instanceof Error ? gcodeOptMut.error.message : "Optimization failed"}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {result && (
+        <Card>
+          <div className="flex items-center justify-between px-4 py-3"
+            style={{ borderBottom: "1px solid var(--color-border)" }}>
+            <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>
+              Optimized G-Code
+            </span>
+            <div className="flex items-center gap-3 text-xs" style={{ color: "var(--color-muted)" }}>
+              <span>{result.originalLineCount} → {result.optimizedLineCount} lines</span>
+              {result.savedPath && (
+                <span className="font-mono" style={{ color: "var(--color-success)" }}>{result.savedPath}</span>
+              )}
+            </div>
+          </div>
+          <div className="p-4 space-y-3">
+            {result.changes.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold mb-1" style={{ color: "var(--color-muted)" }}>Changes made</div>
+                {result.changes.map((c, i) => (
+                  <div key={i} className="text-xs flex items-center gap-1.5" style={{ color: "var(--color-foreground)" }}>
+                    <CheckCircle size={10} style={{ color: "var(--color-success)" }} />
+                    {c}
+                  </div>
+                ))}
+              </div>
+            )}
+            <pre className="text-xs p-3 rounded-lg overflow-x-auto whitespace-pre max-h-96"
+              style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", fontFamily: "monospace" }}>
+              {result.optimizedGCode}
+            </pre>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ── Prompt Expand Panel (standalone) ─────────────────────────────────────────
+
+function PromptExpandCard() {
+  const [prompt, setPrompt] = useState("");
+  const [style, setStyle] = useState<PromptArchitectResult["style"]>("photorealistic");
+  const [result, setResult] = useState<PromptArchitectResult | null>(null);
+
+  const expandMut = useMutation({
+    mutationFn: () => api.studios.imagegen.expandPrompt(prompt, style),
+    onSuccess: (data) => { if (data.success) setResult(data.result); },
+  });
+
+  return (
+    <Card>
+      <CardHeader icon={Zap} title="Expand Prompt with AI" />
+      <div className="p-4 space-y-4">
+        <div>
+          <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Short prompt to expand</div>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="cat in space"
+            rows={2}
+            className="w-full px-3 py-2 rounded-lg text-sm resize-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+          />
+        </div>
+        <div className="flex items-center gap-4">
+          <div>
+            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Style</div>
+            <select value={style} onChange={(e) => setStyle(e.target.value as typeof style)}
+              className="px-2 py-1.5 rounded-lg text-sm"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}>
+              {(["photorealistic", "anime", "oil-painting", "sketch", "cinematic"] as const).map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            disabled={!prompt || expandMut.isPending}
+            onClick={() => expandMut.mutate()}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium mt-3.5"
+            style={{ background: "var(--color-accent)", color: "#fff", opacity: (!prompt || expandMut.isPending) ? 0.5 : 1 }}>
+            {expandMut.isPending ? <><Loader size={13} className="animate-spin" /> Expanding…</> : "Expand"}
+          </button>
+        </div>
+        {expandMut.isError && (
+          <div className="text-xs" style={{ color: "var(--color-error)" }}>
+            {expandMut.error instanceof Error ? expandMut.error.message : "Expand failed"}
+          </div>
+        )}
+        {result && (
+          <div className="rounded-lg p-3 space-y-2 text-xs"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+            <div>
+              <div className="font-semibold mb-0.5" style={{ color: "var(--color-muted)" }}>Expanded prompt</div>
+              <div style={{ color: "var(--color-foreground)" }}>{result.expandedPrompt}</div>
+            </div>
+            {result.negativePrompt && (
+              <div>
+                <div className="font-semibold mb-0.5" style={{ color: "var(--color-muted)" }}>Negative prompt</div>
+                <div style={{ color: "var(--color-foreground)" }}>{result.negativePrompt}</div>
+              </div>
+            )}
+            <div style={{ color: "var(--color-muted)" }}>Model: {result.model}</div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function StudiosPage() {
@@ -441,9 +726,10 @@ export default function StudiosPage() {
   const workspaces = (catalogQ.data?.workspaces ?? []) as Array<{ name?: string; path?: string; createdAt?: string }>;
 
   const tabs: Array<{ id: StudioTab; label: string; icon: React.ElementType }> = [
-    { id: "vibe",     label: "Vibe Coding",       icon: Zap },
-    { id: "imagegen", label: "Image Generation",  icon: Image },
-    { id: "cad",      label: "CAD / Hardware",    icon: Box },
+    { id: "vibe",      label: "Vibe Coding",      icon: Zap },
+    { id: "vibecheck", label: "VibeCheck",         icon: Code2 },
+    { id: "imagegen",  label: "Image Generation", icon: Image },
+    { id: "cad",       label: "CAD / Hardware",   icon: Box },
   ];
 
   return (
@@ -497,9 +783,20 @@ export default function StudiosPage() {
       </div>
 
       {/* Tab content */}
-      {tab === "vibe"     && <VibeCodingTab />}
-      {tab === "imagegen" && <ImageGenTab />}
-      {tab === "cad"      && <CadTab />}
+      {tab === "vibe"      && <VibeCodingTab />}
+      {tab === "vibecheck" && <VibeCheckTab />}
+      {tab === "imagegen"  && (
+        <div className="space-y-6">
+          <PromptExpandCard />
+          <ImageGenTab />
+        </div>
+      )}
+      {tab === "cad"       && (
+        <div className="space-y-6">
+          <CadTab />
+          <GCodeTab />
+        </div>
+      )}
     </div>
   );
 }
