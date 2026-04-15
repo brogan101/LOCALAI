@@ -254,7 +254,7 @@ class WorkspaceContextServiceImpl {
     for (const project of projects) {
       if (!existsSync(project.path)) continue;
       const status = await readJsonIfExists<IndexStatus>(STATUS_FILE, { workspaces: {} });
-      const ws = status.workspaces[project.path];
+      const ws = (status.workspaces ?? {})[project.path];
       summaries.push({
         rootPath: project.path,
         workspaceName: project.name ?? path.basename(project.path),
@@ -312,8 +312,11 @@ class WorkspaceContextServiceImpl {
 
     await writeFile(indexPath, JSON.stringify(index), "utf-8");
 
-    // Update status
+    // Update status — guard against legacy file shapes that lack a workspaces object
     const status = await readJsonIfExists<IndexStatus>(STATUS_FILE, { workspaces: {} });
+    if (!status.workspaces || typeof status.workspaces !== "object" || Array.isArray(status.workspaces)) {
+      status.workspaces = {};
+    }
     status.workspaces[rootPath] = { indexedAt: index.indexedAt, fileCount: indexed.length, hash: createHash("sha256").update(rootPath + index.indexedAt).digest("hex").slice(0, 8) };
     await writeFile(STATUS_FILE, JSON.stringify(status, null, 2), "utf-8");
 

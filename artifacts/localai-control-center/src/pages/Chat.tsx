@@ -10,11 +10,28 @@ import {
   Eye,
   Sparkles,
   ChevronDown,
+  ChevronRight,
   AlertCircle,
+  FileCode,
 } from "lucide-react";
 import api, { type ChatMessage, type SupervisorInfo } from "../api.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ContextFile {
+  path: string;
+  relativePath: string;
+  score: number;
+  matchedSymbols: string[];
+}
+
+interface ContextMeta {
+  workspaceName?: string;
+  workspacePath?: string;
+  fileCount?: number;
+  sectionCount?: number;
+  files?: ContextFile[];
+}
 
 interface StreamChunk {
   token?: string;
@@ -23,7 +40,7 @@ interface StreamChunk {
   supervisor?: SupervisorInfo;
   route?: unknown;
   switched?: boolean;
-  context?: unknown;
+  context?: ContextMeta;
   error?: string;
 }
 
@@ -33,6 +50,7 @@ interface Message {
   supervisor?: SupervisorInfo;
   model?: string;
   streaming?: boolean;
+  context?: ContextMeta;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -65,6 +83,61 @@ function agentName(category?: string): string {
     case "vision":   return "Sovereign Vision";
     default:         return "Sovereign";
   }
+}
+
+// ── Context panel ─────────────────────────────────────────────────────────────
+
+function ContextPanel({ ctx }: { ctx: ContextMeta }) {
+  const [open, setOpen] = useState(false);
+  if (!ctx.files || ctx.files.length === 0) return null;
+  return (
+    <div className="mt-1.5 rounded-lg overflow-hidden text-xs"
+      style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 w-full px-3 py-1.5 text-left"
+        style={{ color: "var(--color-muted)" }}>
+        <FileCode size={11} style={{ color: "var(--color-info)" }} />
+        <span style={{ color: "var(--color-info)" }}>
+          {ctx.files.length} file{ctx.files.length !== 1 ? "s" : ""} in context
+        </span>
+        {ctx.workspaceName && (
+          <span className="opacity-60 ml-1">· {ctx.workspaceName}</span>
+        )}
+        <span className="ml-auto">
+          {open
+            ? <ChevronDown size={10} />
+            : <ChevronRight size={10} />
+          }
+        </span>
+      </button>
+      {open && (
+        <div style={{ borderTop: "1px solid var(--color-border)" }}>
+          {ctx.files.map((f, i) => (
+            <div key={i} className="flex items-center gap-2 px-3 py-1.5"
+              style={{ borderBottom: i < ctx.files!.length - 1 ? "1px solid var(--color-border)" : undefined }}>
+              <FileCode size={10} style={{ color: "var(--color-muted)", flexShrink: 0 }} />
+              <span className="font-mono truncate flex-1" style={{ color: "var(--color-foreground)" }}>
+                {f.relativePath}
+              </span>
+              {f.matchedSymbols.length > 0 && (
+                <span className="opacity-60 shrink-0 truncate max-w-[120px]">
+                  {f.matchedSymbols.slice(0, 3).join(", ")}
+                </span>
+              )}
+              <span className="shrink-0 px-1 rounded"
+                style={{
+                  background: "color-mix(in srgb, var(--color-info) 12%, transparent)",
+                  color: "var(--color-info)",
+                }}>
+                {f.score.toFixed(0)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Thinking indicator ────────────────────────────────────────────────────────
@@ -155,6 +228,11 @@ function MessageBubble({ msg }: { msg: Message }) {
               </div>
             ))}
           </div>
+        )}
+
+        {/* Context files panel */}
+        {!isUser && msg.context && !msg.streaming && (
+          <ContextPanel ctx={msg.context} />
         )}
       </div>
     </div>
@@ -292,6 +370,7 @@ export default function ChatPage() {
       let collectedText = "";
       let supervisor: SupervisorInfo | undefined;
       let responseModel = "";
+      let contextMeta: ContextMeta | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -310,6 +389,7 @@ export default function ChatPage() {
             if (chunk.error) throw new Error(chunk.error);
             if (chunk.supervisor) supervisor = chunk.supervisor;
             if (chunk.model) responseModel = chunk.model;
+            if (chunk.context) contextMeta = chunk.context;
             if (chunk.token) {
               collectedText += chunk.token;
               setMessages(prev => {
@@ -332,7 +412,14 @@ export default function ChatPage() {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last?.role === "assistant") {
-          next[next.length - 1] = { ...last, content: collectedText, streaming: false, supervisor, model: responseModel };
+          next[next.length - 1] = {
+            ...last,
+            content: collectedText,
+            streaming: false,
+            supervisor,
+            model: responseModel,
+            context: contextMeta,
+          };
         }
         return next;
       });

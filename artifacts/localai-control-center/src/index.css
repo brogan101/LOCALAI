@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+/* ── Light theme (default) ── */
 @theme {
   --color-background: #f8fafc;
   --color-surface:    #ffffff;
@@ -13,6 +14,23 @@
   --color-warn:       #f59e0b;
   --color-error:      #ef4444;
   --color-info:       #3b82f6;
+}
+
+/* ── Dark theme — applied via data-theme="dark" on <html> ── */
+html[data-theme="dark"] {
+  --color-background: #0f1117;
+  --color-surface:    #1a1d27;
+  --color-elevated:   #242736;
+  --color-border:     #2e3245;
+  --color-foreground: #e2e8f0;
+  --color-muted:      #8892a4;
+  --color-accent:     #7c3aed;
+  --color-accent-dim: #5b21b6;
+  --color-success:    #10b981;
+  --color-warn:       #f59e0b;
+  --color-error:      #ef4444;
+  --color-info:       #3b82f6;
+  color-scheme: dark;
 }
 
 * {

@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { Route, Switch, Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -8,10 +9,10 @@ import {
   Zap,
   Settings,
   Activity,
+  ScrollText,
   Wrench,
   Radio,
   Plug,
-  RefreshCw,
   Wifi,
   WifiOff,
   AlertTriangle,
@@ -23,6 +24,14 @@ import api from "./api.js";
 import Dashboard from "./pages/Dashboard.js";
 import ChatPage from "./pages/Chat.js";
 import ModelsPage from "./pages/Models.js";
+import DiagnosticsPage from "./pages/Diagnostics.js";
+import IntegrationsPage from "./pages/Integrations.js";
+import RemotePage from "./pages/Remote.js";
+import CleanupPage from "./pages/Cleanup.js";
+import LogsPage from "./pages/Logs.js";
+import WorkspacePage from "./pages/Workspace.js";
+import StudiosPage from "./pages/Studios.js";
+import SettingsPage from "./pages/SettingsPage.js";
 
 function Placeholder({ title, description }: { title: string; description?: string }) {
   return (
@@ -33,7 +42,7 @@ function Placeholder({ title, description }: { title: string; description?: stri
       </div>
       <h2 className="text-lg font-semibold" style={{ color: "var(--color-foreground)" }}>{title}</h2>
       <p className="text-sm max-w-sm" style={{ color: "var(--color-muted)" }}>
-        {description ?? "Sovereign Pending — this feature is coming soon."}
+        {description ?? "This route does not exist."}
       </p>
     </div>
   );
@@ -48,7 +57,7 @@ const NAV_ITEMS = [
   { path: "/workspace",   label: "Workspace",    icon: Folder },
   { path: "/studios",     label: "Studios",      icon: Zap },
   { path: "/diagnostics", label: "Diagnostics",  icon: Activity },
-  { path: "/logs",        label: "Logs",         icon: Activity },
+  { path: "/logs",        label: "Logs",         icon: ScrollText },
   { path: "/cleanup",     label: "Cleanup",      icon: Wrench },
   { path: "/remote",      label: "Remote",       icon: Radio },
   { path: "/integrations",label: "Integrations", icon: Plug },
@@ -151,6 +160,25 @@ function Sidebar() {
   );
 }
 
+// ── Theme watcher ─────────────────────────────────────────────────────────────
+// Reads the saved theme setting and applies data-theme="dark"|"light" to <html>.
+// Runs once on mount and whenever settings change.
+
+function ThemeWatcher() {
+  const { data } = useQuery({
+    queryKey: ["settings"],
+    queryFn: () => api.settings.get(),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    const theme = data?.settings?.theme ?? "dark";
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [data?.settings?.theme]);
+
+  return null;
+}
+
 // ── Query client ──────────────────────────────────────────────────────────────
 
 const queryClient = new QueryClient({
@@ -168,6 +196,7 @@ const queryClient = new QueryClient({
 function AppShell() {
   return (
     <div className="flex" style={{ minHeight: "100vh" }}>
+      <ThemeWatcher />
       <Sidebar />
 
       <main className="flex-1 flex flex-col min-h-screen overflow-hidden"
@@ -176,30 +205,14 @@ function AppShell() {
           <Route path="/" component={Dashboard} />
           <Route path="/chat" component={ChatPage} />
           <Route path="/models" component={ModelsPage} />
-          <Route path="/workspace">
-            <Placeholder title="Workspace" description="Project index and code context. Sovereign Pending." />
-          </Route>
-          <Route path="/studios">
-            <Placeholder title="Studios" description="Autonomous pipelines for code, CAD, and image generation. Sovereign Pending." />
-          </Route>
-          <Route path="/diagnostics">
-            <Placeholder title="Diagnostics" description="System health checks and hardware diagnostics." />
-          </Route>
-          <Route path="/logs">
-            <Placeholder title="Logs" description="Full thought log and activity history." />
-          </Route>
-          <Route path="/cleanup">
-            <Placeholder title="Cleanup" description="Artifact scanner and disk space recovery." />
-          </Route>
-          <Route path="/remote">
-            <Placeholder title="Remote Access" description="Secure remote gateway and tunnel management." />
-          </Route>
-          <Route path="/integrations">
-            <Placeholder title="Integrations" description="Continue.dev, VS Code, and external tool bridges." />
-          </Route>
-          <Route path="/settings">
-            <Placeholder title="Settings" description="Gateway configuration, API keys, and security settings." />
-          </Route>
+          <Route path="/workspace" component={WorkspacePage} />
+          <Route path="/studios" component={StudiosPage} />
+          <Route path="/diagnostics" component={DiagnosticsPage} />
+          <Route path="/logs" component={LogsPage} />
+          <Route path="/cleanup" component={CleanupPage} />
+          <Route path="/remote" component={RemotePage} />
+          <Route path="/integrations" component={IntegrationsPage} />
+          <Route path="/settings" component={SettingsPage} />
           <Route>
             <Placeholder title="404 — Page Not Found" description="This route does not exist." />
           </Route>
