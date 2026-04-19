@@ -19,6 +19,7 @@ import routes from "./routes/index.js";
 import { initDatabase } from "./db/migrate.js";
 import { taskQueue } from "./lib/task-queue.js";
 import { loadSettings } from "./lib/secure-config.js";
+import { WARMUP_TOP_N } from "./config/models.config.js";
 
 const execAsync = promisify(exec);
 
@@ -201,6 +202,47 @@ void loadSettings().then(settings => {
 });
 
 startDistributedNodeHeartbeat();
+
+// ── Model warm-up scheduler (8.5) ─────────────────────────────────────────────
+// Reads usage_metrics to find top-N most-used models, sends keep_alive pings
+// so the first chat turn is instant.
+void (async () => {
+  try {
+    await new Promise(r => setTimeout(r, 8000)); // let Ollama finish starting
+    const { sqlite } = await import("./db/database.js");
+    const topModels = sqlite.prepare(`
+      SELECT m.model_name, SUM(1) as cnt
+      FROM chat_messages m
+      WHERE m.role = 'assistant' AND json_valid(m.supervisor_json)
+      GROUP BY m.model_name
+      ORDER BY cnt DESC
+      LIMIT ?
+    `).all(WARMUP_TOP_N) as Array<{ model_name: string; cnt: number }>;
+
+    if (topModels.length === 0) return;
+
+    const { getOllamaUrl } = await import("./lib/ollama-url.js");
+    const { ollamaReachable } = await import("./lib/runtime.js");
+    if (!await ollamaReachable()) return;
+
+    const base = await getOllamaUrl();
+    for (const row of topModels) {
+      try {
+        await fetch(`${base}/api/generate`, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ model: row.model_name, prompt: "", keep_alive: "1m" }),
+        });
+        thoughtLog.publish({
+          category: "kernel",
+          title:    "Warm-up: Model Pre-loaded",
+          message:  `${row.model_name} pre-loaded for instant first turn`,
+          metadata: { model: row.model_name },
+        });
+      } catch { /* non-fatal */ }
+    }
+  } catch { /* non-fatal — usage_metrics table may be empty on first boot */ }
+})();
 
 thoughtLog.publish({
   category: "kernel",

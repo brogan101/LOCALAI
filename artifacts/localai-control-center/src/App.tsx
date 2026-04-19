@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   ChevronRight,
   Server,
+  CloudOff,
 } from "lucide-react";
 import api from "./api.js";
 
@@ -196,6 +197,32 @@ const queryClient = new QueryClient({
 
 // ── App shell ─────────────────────────────────────────────────────────────────
 
+// ── Offline mode banner (8.7) ─────────────────────────────────────────────────
+
+function OfflineBanner() {
+  const { data } = useQuery({
+    queryKey: ["heartbeat"],
+    queryFn: () => api.system.heartbeat(),
+    refetchInterval: 15_000,
+    retry: false,
+  });
+
+  const state = data?.state ?? "online";
+  if (state !== "offline") return null;
+
+  return (
+    <div className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium"
+      style={{
+        background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+        borderBottom: "1px solid color-mix(in srgb, var(--color-error) 25%, transparent)",
+        color: "var(--color-error)",
+      }}>
+      <CloudOff size={14} />
+      <span>Offline mode — catalog sync, web search and update checks disabled</span>
+    </div>
+  );
+}
+
 function AppShell() {
   return (
     <div className="flex" style={{ minHeight: "100vh" }}>
@@ -204,6 +231,7 @@ function AppShell() {
 
       <main className="flex-1 flex flex-col min-h-screen overflow-hidden"
         style={{ marginLeft: 220, background: "var(--color-background)" }}>
+        <OfflineBanner />
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/chat" component={ChatPage} />

@@ -8,11 +8,12 @@ import {
   CheckCircle, XCircle, RotateCcw, Loader2, FileDiff,
   Layers, GitBranch, Plus, PanelLeft, MoreVertical,
   Copy, Edit2, Trash2, GitFork, Check, Mic, MicOff, Camera, Volume2, VolumeX,
+  Pin, PanelRight, Info, Gauge, Zap,
 } from "lucide-react";
 import api, {
   type ChatMessage, type SupervisorInfo, type ContextWorkspaceSummary,
   type AppSettings, type SelfHealResult, type RefactorPlan, type RefactorJob,
-  type RefactorStep, type ChatSession,
+  type RefactorStep, type ChatSession, type PinboardItem, type TokenBudget,
 } from "../api.js";
 import { useLocation, useSearch } from "wouter";
 
@@ -355,16 +356,73 @@ function RenderedContent({
   );
 }
 
+// ── Model chip with "Why this model?" tooltip (8.13) ─────────────────────────
+
+function ModelChipWithTooltip({ model, supervisor, color }: {
+  model: string;
+  supervisor: SupervisorInfo;
+  color: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative inline-block ml-1">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1 px-1.5 py-0 rounded text-xs"
+        title="Why this model?"
+        style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
+        <Cpu size={9} />
+        {model}
+        <Info size={9} className="opacity-60" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-5 z-50 rounded-xl shadow-xl p-3 min-w-[220px] max-w-[320px]"
+          style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Cpu size={12} style={{ color }} />
+            <span className="font-semibold text-xs" style={{ color: "var(--color-foreground)" }}>Why {model}?</span>
+            <button onClick={() => setOpen(false)} className="ml-auto" style={{ color: "var(--color-muted)" }}><X size={11} /></button>
+          </div>
+          <div className="space-y-1.5 text-xs" style={{ color: "var(--color-muted)" }}>
+            <div><span className="font-medium" style={{ color: "var(--color-foreground)" }}>Goal:</span> {supervisor.goal}</div>
+            <div><span className="font-medium" style={{ color: "var(--color-foreground)" }}>Category:</span> {supervisor.category}</div>
+            {supervisor.confidence !== undefined && (
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium" style={{ color: "var(--color-foreground)" }}>Confidence:</span>
+                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-surface)" }}>
+                  <div className="h-full rounded-full" style={{ width: `${supervisor.confidence}%`, background: color }} />
+                </div>
+                <span>{supervisor.confidence}%</span>
+              </div>
+            )}
+            {supervisor.steps && supervisor.steps.length > 0 && (
+              <div>
+                <span className="font-medium" style={{ color: "var(--color-foreground)" }}>Reasoning steps:</span>
+                <ol className="mt-1 space-y-0.5 list-decimal list-inside">
+                  {supervisor.steps.map((s, i) => <li key={i}>{s}</li>)}
+                </ol>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Message bubble ────────────────────────────────────────────────────────────
 
 function MessageBubble({
   msg,
   onBranch,
   onApplyToFile,
+  onPipeToNewChat,
 }: {
   msg: Message;
   onBranch?: (id: string) => void;
   onApplyToFile?: (filePath: string) => void;
+  onPipeToNewChat?: (content: string) => void;
 }) {
   const isUser = msg.role === "user";
   const color = agentColor(msg.supervisor?.category);
@@ -402,10 +460,7 @@ function MessageBubble({
             <span className="font-medium">{agentName(msg.supervisor.category)}</span>
             {msg.supervisor.toolset && <span className="opacity-60">· {msg.supervisor.toolset}</span>}
             {msg.model && (
-              <span className="ml-1 px-1.5 py-0 rounded text-xs"
-                style={{ background: `color-mix(in srgb, ${color} 12%, transparent)` }}>
-                {msg.model}
-              </span>
+              <ModelChipWithTooltip model={msg.model} supervisor={msg.supervisor} color={color} />
             )}
           </div>
         )}
@@ -474,6 +529,14 @@ function MessageBubble({
                     className="flex items-center gap-2 w-full px-3 py-2 text-xs text-left hover:bg-[color-mix(in_srgb,var(--color-border)_50%,transparent)]"
                     style={{ color: "var(--color-foreground)" }}>
                     <GitFork size={11} /> Branch from here
+                  </button>
+                )}
+                {onPipeToNewChat && (
+                  <button
+                    onClick={() => { onPipeToNewChat(msg.content); setMenuOpen(false); }}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-xs text-left hover:bg-[color-mix(in_srgb,var(--color-border)_50%,transparent)]"
+                    style={{ color: "var(--color-foreground)" }}>
+                    <GitBranch size={11} /> Send to new chat
                   </button>
                 )}
               </div>
@@ -1278,6 +1341,277 @@ function EmptyState({
   );
 }
 
+// ── Pinboard rail (8.4) ───────────────────────────────────────────────────────
+
+function PinboardRail({ sessionId }: { sessionId: string | null }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [adding, setAdding]       = useState(false);
+  const [newNote, setNewNote]     = useState("");
+  const qc = useQueryClient();
+
+  const itemsQ = useQuery({
+    queryKey: ["pinboard"],
+    queryFn:  () => api.pinboard.list(),
+    staleTime: 15_000,
+  });
+
+  const addMut = useMutation({
+    mutationFn: (content: string) =>
+      api.pinboard.add({ kind: "text", title: content.slice(0, 40), content }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["pinboard"] }); setNewNote(""); setAdding(false); },
+  });
+
+  const delMut = useMutation({
+    mutationFn: (id: string) => api.pinboard.remove(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["pinboard"] }),
+  });
+
+  const items: PinboardItem[] = itemsQ.data?.items ?? [];
+
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-center py-3 shrink-0"
+        style={{ width: 32, borderRight: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
+        <button onClick={() => setCollapsed(false)} title="Open Pinboard"
+          style={{ color: "var(--color-muted)" }}>
+          <Pin size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col shrink-0"
+      style={{ width: 220, borderRight: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
+      <div className="flex items-center gap-1.5 px-3 py-2.5 shrink-0"
+        style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <Pin size={12} style={{ color: "var(--color-accent)" }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: "var(--color-muted)" }}>PINBOARD</span>
+        <button onClick={() => setAdding(a => !a)} title="Add pin"
+          className="p-1 rounded" style={{ color: "var(--color-muted)" }}>
+          <Plus size={12} />
+        </button>
+        <button onClick={() => setCollapsed(true)} title="Collapse"
+          className="p-1 rounded" style={{ color: "var(--color-muted)" }}>
+          <PanelRight size={12} />
+        </button>
+      </div>
+
+      {adding && (
+        <div className="px-3 py-2 shrink-0" style={{ borderBottom: "1px solid var(--color-border)" }}>
+          <textarea
+            autoFocus
+            value={newNote}
+            onChange={e => setNewNote(e.target.value)}
+            placeholder="Note or snippet…"
+            rows={3}
+            className="w-full text-xs p-2 rounded outline-none resize-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          <div className="flex gap-1.5 mt-1">
+            <button
+              onClick={() => addMut.mutate(newNote)}
+              disabled={!newNote.trim() || addMut.isPending}
+              className="flex-1 text-xs py-1 rounded font-medium disabled:opacity-50"
+              style={{ background: "var(--color-accent)", color: "#fff" }}>
+              Pin
+            </button>
+            <button onClick={() => { setAdding(false); setNewNote(""); }}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto py-1">
+        {items.length === 0 && (
+          <p className="text-xs px-3 py-3" style={{ color: "var(--color-muted)" }}>No pins yet.</p>
+        )}
+        {items.map(item => (
+          <div key={item.id} className="group relative px-3 py-2 text-xs"
+            style={{ borderBottom: "1px solid color-mix(in srgb, var(--color-border) 50%, transparent)" }}>
+            <div className="font-medium truncate mb-0.5" style={{ color: "var(--color-foreground)" }}>{item.title}</div>
+            <div className="line-clamp-2 text-xs" style={{ color: "var(--color-muted)" }}>{item.content}</div>
+            <button
+              onClick={() => delMut.mutate(item.id)}
+              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded"
+              style={{ color: "var(--color-muted)" }}>
+              <X size={10} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Token budget bar (8.12) ───────────────────────────────────────────────────
+
+function TokenBudgetBar({ sessionId, messages }: { sessionId: string; messages: Array<{ role: string; content: string }> }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [budgetInput, setBudgetInput] = useState("");
+
+  const budgetQ = useQuery({
+    queryKey: ["token-budget", sessionId],
+    queryFn:  () => api.tokenBudget.get(sessionId),
+    staleTime: 10_000,
+  });
+
+  const setMut = useMutation({
+    mutationFn: (tokens: number) => api.tokenBudget.set(sessionId, tokens),
+    onSuccess:  () => { void qc.invalidateQueries({ queryKey: ["token-budget", sessionId] }); setEditing(false); },
+  });
+
+  const summarizeMut = useMutation({
+    mutationFn: () => api.tokenBudget.summarize(sessionId, messages),
+    onSuccess:  () => void qc.invalidateQueries({ queryKey: ["token-budget", sessionId] }),
+  });
+
+  const budget: TokenBudget | null = budgetQ.data?.budget ?? null;
+  const pct = budget ? Math.min(100, Math.round((budget.usedTokens / budget.budgetTokens) * 100)) : 0;
+  const over = budget && budget.usedTokens > budget.budgetTokens;
+
+  if (!budget && !budgetQ.isLoading) return null;
+  if (!budget) return null;
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-1.5 text-xs shrink-0"
+      style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
+      <Gauge size={11} style={{ color: over ? "var(--color-error)" : "var(--color-muted)" }} />
+      <span style={{ color: "var(--color-muted)" }}>Token budget:</span>
+      <div className="flex items-center gap-1">
+        <div className="w-24 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-elevated)" }}>
+          <div className="h-full rounded-full transition-all"
+            style={{ width: `${pct}%`, background: over ? "var(--color-error)" : "var(--color-accent)" }} />
+        </div>
+        <span style={{ color: over ? "var(--color-error)" : "var(--color-muted)" }}>
+          {budget.usedTokens}/{budget.budgetTokens}
+        </span>
+      </div>
+      {over && (
+        <button
+          onClick={() => summarizeMut.mutate()}
+          disabled={summarizeMut.isPending}
+          className="flex items-center gap-1 px-2 py-0.5 rounded font-medium disabled:opacity-50"
+          style={{ background: "color-mix(in srgb, var(--color-warn) 15%, transparent)", color: "var(--color-warn)", border: "1px solid color-mix(in srgb, var(--color-warn) 30%, transparent)" }}>
+          {summarizeMut.isPending ? <Loader2 size={10} className="animate-spin" /> : <Zap size={10} />}
+          Summarize
+        </button>
+      )}
+      {editing ? (
+        <form onSubmit={e => { e.preventDefault(); setMut.mutate(Number(budgetInput)); }}
+          className="flex items-center gap-1 ml-auto">
+          <input
+            autoFocus value={budgetInput}
+            onChange={e => setBudgetInput(e.target.value)}
+            type="number" min="500" max="200000"
+            className="w-20 px-1.5 py-0.5 rounded text-xs outline-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          <button type="submit" className="text-xs px-2 py-0.5 rounded"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>Set</button>
+          <button type="button" onClick={() => setEditing(false)}
+            style={{ color: "var(--color-muted)" }}><X size={11} /></button>
+        </form>
+      ) : (
+        <button onClick={() => { setBudgetInput(String(budget.budgetTokens)); setEditing(true); }}
+          className="ml-auto text-xs px-2 py-0.5 rounded"
+          style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+          Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Conversation tree modal (8.2) ─────────────────────────────────────────────
+
+function ConversationTreeModal({ currentSessionId, onSelect, onClose }: {
+  currentSessionId: string | null;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+}) {
+  const sessionsQ = useQuery({
+    queryKey: ["chat-sessions"],
+    queryFn:  () => api.sessions.list(),
+    staleTime: 10_000,
+  });
+
+  const sessions = sessionsQ.data?.sessions ?? [];
+
+  // Lay out sessions as a horizontal timeline — no parent info stored so flat grid
+  const W = 700, H = Math.max(200, Math.ceil(sessions.length / 4) * 90 + 40);
+  const cols = 4;
+  const nodes = sessions.map((s, i) => ({
+    ...s,
+    x: 60 + (i % cols) * 165,
+    y: 40 + Math.floor(i / cols) * 85,
+  }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.5)" }}
+      onClick={onClose}>
+      <div className="rounded-2xl shadow-2xl overflow-hidden"
+        style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxWidth: 780, width: "90vw" }}
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+          <GitBranch size={14} style={{ color: "var(--color-accent)" }} />
+          <span className="font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>Conversation Tree</span>
+          <button onClick={onClose} className="ml-auto" style={{ color: "var(--color-muted)" }}><X size={14} /></button>
+        </div>
+        <div className="p-4 overflow-auto" style={{ maxHeight: "70vh" }}>
+          {sessionsQ.isLoading && (
+            <div className="flex items-center gap-2 py-8 justify-center text-sm" style={{ color: "var(--color-muted)" }}>
+              <Loader2 size={14} className="animate-spin" /> Loading…
+            </div>
+          )}
+          {!sessionsQ.isLoading && (
+            <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", minHeight: 200 }}>
+              {nodes.map((node, i) => {
+                const isActive = node.id === currentSessionId;
+                // Draw connector to previous node if same row (simple visual)
+                const prev = nodes[i - 1];
+                const sameLine = prev && Math.floor(i / cols) === Math.floor((i - 1) / cols);
+                return (
+                  <g key={node.id}>
+                    {sameLine && (
+                      <line x1={prev.x + 70} y1={prev.y + 20} x2={node.x} y2={node.y + 20}
+                        stroke="var(--color-border)" strokeWidth={1.5} strokeDasharray="4,3" />
+                    )}
+                    <rect x={node.x} y={node.y} width={150} height={55} rx={10}
+                      fill={isActive ? "color-mix(in srgb, var(--color-accent) 18%, var(--color-elevated))" : "var(--color-elevated)"}
+                      stroke={isActive ? "var(--color-accent)" : "var(--color-border)"}
+                      strokeWidth={isActive ? 2 : 1}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => { onSelect(node.id); onClose(); }}
+                    />
+                    <text x={node.x + 10} y={node.y + 20} fontSize={11} fontWeight="600"
+                      fill={isActive ? "var(--color-accent)" : "var(--color-foreground)"}
+                      style={{ pointerEvents: "none" }}>
+                      {node.name.length > 18 ? node.name.slice(0, 16) + "…" : node.name}
+                    </text>
+                    <text x={node.x + 10} y={node.y + 36} fontSize={9}
+                      fill="var(--color-muted)" style={{ pointerEvents: "none" }}>
+                      {new Date(node.updatedAt).toLocaleDateString()}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          )}
+          {!sessionsQ.isLoading && sessions.length === 0 && (
+            <p className="text-sm py-8 text-center" style={{ color: "var(--color-muted)" }}>No sessions yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Chat page ─────────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
@@ -1297,6 +1631,9 @@ export default function ChatPage() {
 
   // Toast state
   const [toast, setToast] = useState<{ message: string; onAction?: () => void; actionLabel?: string } | null>(null);
+
+  // Conversation tree modal (8.2)
+  const [showTree, setShowTree] = useState(false);
 
   // Image attachments
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
@@ -1343,6 +1680,7 @@ export default function ChatPage() {
 
     async function bootstrap() {
       setSessionLoading(true);
+      const pipedContent = params.get("pipe");
       try {
         if (urlSession) {
           // Load existing session
@@ -1354,6 +1692,8 @@ export default function ChatPage() {
           }));
           setMessages(loaded);
           setSessionId(urlSession);
+          // Pre-fill input with piped content (8.11)
+          if (pipedContent && loaded.length === 0) setInput(decodeURIComponent(pipedContent));
         } else {
           // Create new session, redirect to ?session=<id>
           const data = await api.sessions.create("New Chat");
@@ -1455,6 +1795,41 @@ export default function ChatPage() {
     setInput(`/edit ${filePath}`);
     textareaRef.current?.focus();
   }
+
+  // ── Chat-to-chat piping (8.11) ────────────────────────────────────────────
+
+  async function handlePipeToNewChat(content: string) {
+    try {
+      const created = await api.sessions.create();
+      const newId = created.session.id;
+      void qc.invalidateQueries({ queryKey: ["chat-sessions"] });
+      // Navigate to new session with the piped content pre-filled via URL
+      navigate(`/chat?session=${newId}&pipe=${encodeURIComponent(content.slice(0, 500))}`);
+    } catch { /* ignore */ }
+  }
+
+  // ── Ctrl+Shift+Z global undo hotkey (8.6) ────────────────────────────────
+
+  useEffect(() => {
+    function onKeyDown(e: globalThis.KeyboardEvent) {
+      if (e.ctrlKey && e.shiftKey && e.key === "Z") {
+        e.preventDefault();
+        void (async () => {
+          try {
+            const candidates = await api.audit.rollbackCandidates();
+            const first = candidates.candidates?.[0];
+            if (!first?.filePath) { setToast({ message: "No recent edits to undo" }); return; }
+            await api.rollback.rollback(first.filePath);
+            setToast({ message: `Rolled back: ${first.filePath.split(/[\\/]/).pop()}` });
+          } catch (err) {
+            setToast({ message: `Rollback failed: ${err instanceof Error ? err.message : String(err)}` });
+          }
+        })();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // ── Sidebar rename/delete callbacks (pass-through to invalidate) ─────────────
 
@@ -1881,6 +2256,13 @@ export default function ChatPage() {
             </div>
           )}
           <button
+            onClick={() => setShowTree(t => !t)}
+            title="Conversation tree"
+            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+            <GitBranch size={12} /> Tree
+          </button>
+          <button
             onClick={() => void handleNewChat()}
             className="text-xs px-3 py-1.5 rounded-lg"
             style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
@@ -1912,6 +2294,9 @@ export default function ChatPage() {
           </div>
         )}
 
+        {/* Pinboard rail (8.4) */}
+        <PinboardRail sessionId={sessionId} />
+
         {/* Messages pane */}
         <div
           className="flex-1 flex flex-col overflow-hidden"
@@ -1919,6 +2304,9 @@ export default function ChatPage() {
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           style={{ position: "relative" }}>
+          {/* Token budget bar (8.12) — only when a session is active */}
+          {sessionId && <TokenBudgetBar sessionId={sessionId} messages={messages.map(m => ({ role: m.role, content: m.content }))} />}
+
           {dragOver && (
             <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none"
               style={{ background: "color-mix(in srgb, var(--color-accent) 10%, transparent)", border: "2px dashed var(--color-accent)" }}>
@@ -1947,6 +2335,7 @@ export default function ChatPage() {
                 msg={msg}
                 onBranch={handleBranchFromMessage}
                 onApplyToFile={handleApplyToFile}
+                onPipeToNewChat={handlePipeToNewChat}
               />
             ))}
             {error && (
@@ -2144,6 +2533,15 @@ export default function ChatPage() {
           onReject={handleRejectAction}
         />
       </div>
+
+      {/* Conversation tree modal (8.2) */}
+      {showTree && (
+        <ConversationTreeModal
+          currentSessionId={sessionId}
+          onSelect={handleSelectSession}
+          onClose={() => setShowTree(false)}
+        />
+      )}
 
       {/* Toast */}
       {toast && (

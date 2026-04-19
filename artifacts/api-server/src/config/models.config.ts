@@ -306,3 +306,13 @@ export const CODING_FALLBACK_SEARCH_ORDER: string[] = [
   "qwen3-coder",
   "qwen2.5-coder",
 ];
+
+/** Model used as benchmark judge (arbiter) */
+export const JUDGE_MODEL = "llama3.1:8b";
+
+/** Default benchmark prompt */
+export const BENCHMARK_PROMPT =
+  "Explain the difference between a mutex and a semaphore. Give a concrete code example for each in any language.";
+
+/** Warm-up model count: preload top N most-used models on boot */
+export const WARMUP_TOP_N = 2;

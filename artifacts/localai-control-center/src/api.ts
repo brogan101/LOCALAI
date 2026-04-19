@@ -1326,10 +1326,136 @@ export const webSearch = {
     post<{ success: boolean; markdown: string; url: string }>("/web/fetch", { url }),
 };
 
+// ── Benchmark ─────────────────────────────────────────────────────────────────
+
+export interface BenchmarkResult {
+  model:       string;
+  output:      string;
+  tokensOut:   number;
+  durationMs:  number;
+  score:       number;
+  scoreReason: string;
+}
+
+export interface BenchmarkRun {
+  id:         string;
+  prompt:     string;
+  createdAt:  string;
+  judgeModel: string;
+  status:     "running" | "completed" | "failed";
+  results:    BenchmarkResult[];
+  error?:     string;
+}
+
+export const benchmarkApi = {
+  start: (models: string[], prompt?: string) =>
+    post<{ success: boolean; run: BenchmarkRun }>("/benchmark/runs", { models, prompt }),
+  list: () =>
+    get<{ success: boolean; runs: BenchmarkRun[] }>("/benchmark/runs"),
+  get: (id: string) =>
+    get<{ success: boolean; run: BenchmarkRun }>(`/benchmark/runs/${encodeURIComponent(id)}`),
+};
+
+// ── Pinboard ──────────────────────────────────────────────────────────────────
+
+export interface PinboardItem {
+  id:            string;
+  kind:          "text" | "file" | "snippet";
+  title:         string;
+  content:       string;
+  filePath?:     string;
+  workspacePath?: string;
+  createdAt:     string;
+}
+
+export const pinboard = {
+  list: () =>
+    get<{ success: boolean; items: PinboardItem[] }>("/pinboard"),
+  add: (item: Omit<PinboardItem, "id" | "createdAt">) =>
+    post<{ success: boolean; item: PinboardItem }>("/pinboard", item),
+  remove: (id: string) =>
+    del<{ success: boolean }>(`/pinboard/${encodeURIComponent(id)}`),
+};
+
+// ── Token Budget ──────────────────────────────────────────────────────────────
+
+export interface TokenBudget {
+  sessionId:    string;
+  budgetTokens: number;
+  usedTokens:   number;
+  updatedAt:    string;
+}
+
+export const tokenBudget = {
+  get: (sessionId: string) =>
+    get<{ success: boolean; budget: TokenBudget | null }>(`/token-budget/${encodeURIComponent(sessionId)}`),
+  set: (sessionId: string, budgetTokens: number, usedTokens?: number) =>
+    put<{ success: boolean }>(`/token-budget/${encodeURIComponent(sessionId)}`, { budgetTokens, usedTokens }),
+  remove: (sessionId: string) =>
+    del<{ success: boolean }>(`/token-budget/${encodeURIComponent(sessionId)}`),
+  summarize: (sessionId: string, messages: Array<{ role: string; content: string }>, model?: string) =>
+    post<{ success: boolean; preamble: string; trimmedCount: number }>(`/token-budget/${encodeURIComponent(sessionId)}/summarize`, { messages, model }),
+};
+
+// ── Time Travel ───────────────────────────────────────────────────────────────
+
+export interface TimeTravelBackup {
+  filePath:   string;
+  bakPath:    string;
+  sizeBytes:  number;
+  modifiedAt: string;
+  isReadable: boolean;
+}
+
+export interface TimeTravelDiff {
+  bakPath:     string;
+  origPath:    string;
+  origExists:  boolean;
+  bakContent:  string;
+  origContent: string;
+  diff:        string;
+  hasChanges:  boolean;
+}
+
+export const timeTravel = {
+  scan: (root?: string) =>
+    get<{ success: boolean; backups: TimeTravelBackup[]; scannedRoot: string }>(
+      `/timetravel/backups${root ? `?root=${encodeURIComponent(root)}` : ""}`,
+    ),
+  diff: (bakPath: string) =>
+    get<{ success: boolean } & TimeTravelDiff>(
+      `/timetravel/diff?bak=${encodeURIComponent(bakPath)}`,
+    ),
+  restore: (bakPath: string) =>
+    post<{ success: boolean; restored: string }>("/timetravel/restore", { bakPath }),
+};
+
+// ── Plugins ───────────────────────────────────────────────────────────────────
+
+export interface PluginManifest {
+  name:         string;
+  version:      string;
+  description:  string;
+  author:       string;
+  routes:       Array<{ method: string; path: string; handler: string }>;
+  pages:        Array<{ label: string; path: string; component: string }>;
+  permissions:  { fileAccess: "none" | "read-only" | "read-write" };
+  enabled:      boolean;
+  manifestPath: string;
+}
+
+export const pluginsApi = {
+  list: () =>
+    get<{ success: boolean; plugins: PluginManifest[]; pluginsDir: string }>("/plugins"),
+  get: (name: string) =>
+    get<{ success: boolean; plugin: PluginManifest }>(`/plugins/${encodeURIComponent(name)}`),
+};
+
 export default {
   health, kernel, models, modelsExtra, chat, observability, tasks,
   system, systemExtra, workspace, workspaceExtra,
   studios, integrations, remote, continueApi, context, intelligence,
   filebrowser, stack, repair, rollback, updater, usage, audit, settings,
   hardware, os, sessions, stt, tts, ragApi, webSearch,
+  benchmarkApi, pinboard, tokenBudget, timeTravel, pluginsApi,
 };

@@ -25,6 +25,11 @@ import stt from "./stt.js";
 import tts from "./tts.js";
 import ragRoute from "./rag.js";
 import web from "./web.js";
+import benchmark from "./benchmark.js";
+import pinboard from "./pinboard.js";
+import tokenBudget from "./token-budget.js";
+import timetravel from "./timetravel.js";
+import plugins from "./plugins.js";
 
 const router = Router();
 
@@ -54,5 +59,10 @@ router.use(stt);
 router.use(tts);
 router.use(ragRoute);
 router.use(web);
+router.use(benchmark);
+router.use(pinboard);
+router.use(tokenBudget);
+router.use(timetravel);
+router.use(plugins);
 
 export default router;

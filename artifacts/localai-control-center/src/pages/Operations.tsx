@@ -5,11 +5,11 @@ import {
   Download, RotateCcwIcon, AlertTriangle, CheckCircle, XCircle,
   Package, Shield, ChevronDown, ChevronRight, Loader2,
   History, Wrench, ArrowDownToLine, Monitor, Keyboard, MousePointer,
-  Camera, Search,
+  Camera, Search, Clock, FileDiff, RotateCcw as Restore,
 } from "lucide-react";
 import api, {
   type StackComponent, type RepairLogEntry, type RepairHealthEntry,
-  type BackupEntry, type OsWindow,
+  type BackupEntry, type OsWindow, type TimeTravelBackup, type TimeTravelDiff,
 } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -881,17 +881,162 @@ function OsInteropPanel() {
   );
 }
 
+// ── Time Travel panel (8.9) ───────────────────────────────────────────────────
+
+function TimeTravelPanel() {
+  const [scanRoot, setScanRoot] = useState("");
+  const [selected, setSelected] = useState<TimeTravelBackup | null>(null);
+  const [diff, setDiff]         = useState<TimeTravelDiff | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restored, setRestored]   = useState<string | null>(null);
+
+  const backupsQ = useQuery({
+    queryKey: ["timetravel-backups", scanRoot],
+    queryFn:  () => api.timeTravel.scan(scanRoot || undefined),
+    staleTime: 30_000,
+  });
+
+  const backups: TimeTravelBackup[] = backupsQ.data?.backups ?? [];
+
+  async function loadDiff(bak: TimeTravelBackup) {
+    setSelected(bak);
+    setDiff(null);
+    setRestored(null);
+    try {
+      const d = await api.timeTravel.diff(bak.bakPath);
+      setDiff(d);
+    } catch { /* ignore */ }
+  }
+
+  async function doRestore() {
+    if (!selected) return;
+    setRestoring(true);
+    try {
+      const r = await api.timeTravel.restore(selected.bakPath);
+      setRestored(r.restored);
+    } catch { /* ignore */ } finally {
+      setRestoring(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader icon={Clock} title="Time Travel — .bak File Inspector" />
+      <div className="p-4">
+        {/* Scan root */}
+        <div className="flex gap-2 mb-4">
+          <input
+            value={scanRoot}
+            onChange={e => setScanRoot(e.target.value)}
+            placeholder="Scan root directory (default: home)"
+            className="flex-1 px-3 py-1.5 rounded-lg text-sm outline-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          <button
+            onClick={() => void backupsQ.refetch()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>
+            <Search size={13} /> Scan
+          </button>
+        </div>
+
+        {backupsQ.isLoading && (
+          <div className="flex items-center gap-2 py-4 text-sm" style={{ color: "var(--color-muted)" }}>
+            <Loader2 size={14} className="animate-spin" /> Scanning…
+          </div>
+        )}
+
+        {!backupsQ.isLoading && backups.length === 0 && (
+          <p className="text-sm py-4 text-center" style={{ color: "var(--color-muted)" }}>No .bak files found.</p>
+        )}
+
+        {backups.length > 0 && (
+          <div className="flex gap-4" style={{ minHeight: 280 }}>
+            {/* Backup list */}
+            <div className="w-64 shrink-0 overflow-y-auto space-y-1 border-r pr-3"
+              style={{ borderColor: "var(--color-border)", maxHeight: 400 }}>
+              {backups.map(b => (
+                <button
+                  key={b.bakPath}
+                  onClick={() => void loadDiff(b)}
+                  className="w-full text-left px-2 py-1.5 rounded text-xs transition-colors"
+                  style={{
+                    background: selected?.bakPath === b.bakPath ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                    color: "var(--color-foreground)",
+                  }}>
+                  <div className="truncate font-medium">{b.filePath.split(/[\\/]/).pop()}</div>
+                  <div className="truncate opacity-50">{b.modifiedAt.slice(0, 10)}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Diff view */}
+            <div className="flex-1 min-w-0">
+              {!selected && (
+                <p className="text-xs py-4" style={{ color: "var(--color-muted)" }}>Select a backup to inspect.</p>
+              )}
+              {selected && !diff && (
+                <div className="flex items-center gap-2 py-4 text-xs" style={{ color: "var(--color-muted)" }}>
+                  <Loader2 size={12} className="animate-spin" /> Loading diff…
+                </div>
+              )}
+              {diff && (
+                <>
+                  <div className="flex items-center gap-2 mb-3">
+                    <FileDiff size={13} style={{ color: "var(--color-accent)" }} />
+                    <span className="text-xs font-medium truncate" style={{ color: "var(--color-foreground)" }}>
+                      {diff.origPath.split(/[\\/]/).pop()}
+                    </span>
+                    {!diff.origExists && (
+                      <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "color-mix(in srgb, var(--color-warn) 15%, transparent)", color: "var(--color-warn)" }}>
+                        Original deleted
+                      </span>
+                    )}
+                    <button
+                      onClick={() => void doRestore()}
+                      disabled={restoring}
+                      className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium disabled:opacity-50"
+                      style={{ background: "var(--color-accent)", color: "#fff" }}>
+                      {restoring ? <Loader2 size={10} className="animate-spin" /> : <Restore size={10} />}
+                      Restore
+                    </button>
+                  </div>
+                  {restored && (
+                    <div className="text-xs mb-2 px-2 py-1.5 rounded"
+                      style={{ background: "color-mix(in srgb, var(--color-success) 12%, transparent)", color: "var(--color-success)" }}>
+                      Restored to {restored}
+                    </div>
+                  )}
+                  {diff.hasChanges ? (
+                    <pre className="text-xs overflow-auto p-3 rounded"
+                      style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", maxHeight: 300, fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+                      {diff.diff}
+                    </pre>
+                  ) : (
+                    <p className="text-xs" style={{ color: "var(--color-muted)" }}>No changes — backup matches current file.</p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type OpsTab = "stack" | "updater" | "rollback" | "repair" | "sysupdate" | "osinterop";
+type OpsTab = "stack" | "updater" | "rollback" | "repair" | "sysupdate" | "osinterop" | "timetravel";
 
 const TABS: Array<{ id: OpsTab; label: string }> = [
-  { id: "stack",     label: "Stack" },
-  { id: "updater",   label: "Model Updater" },
-  { id: "rollback",  label: "Rollback" },
-  { id: "repair",    label: "Repair Log" },
-  { id: "sysupdate", label: "System Updates" },
-  { id: "osinterop", label: "OS Interop" },
+  { id: "stack",      label: "Stack" },
+  { id: "updater",    label: "Model Updater" },
+  { id: "rollback",   label: "Rollback" },
+  { id: "repair",     label: "Repair Log" },
+  { id: "sysupdate",  label: "System Updates" },
+  { id: "osinterop",  label: "OS Interop" },
+  { id: "timetravel", label: "Time Travel" },
 ];
 
 export default function OperationsPage() {
@@ -927,12 +1072,13 @@ export default function OperationsPage() {
         ))}
       </div>
 
-      {tab === "stack"     && <StackPanel />}
-      {tab === "updater"   && <UpdaterPanel />}
-      {tab === "rollback"  && <RollbackPanel />}
-      {tab === "repair"    && <RepairLogPanel />}
-      {tab === "sysupdate" && <SystemUpdatesPanel />}
-      {tab === "osinterop" && <OsInteropPanel />}
+      {tab === "stack"      && <StackPanel />}
+      {tab === "updater"    && <UpdaterPanel />}
+      {tab === "rollback"   && <RollbackPanel />}
+      {tab === "repair"     && <RepairLogPanel />}
+      {tab === "sysupdate"  && <SystemUpdatesPanel />}
+      {tab === "osinterop"  && <OsInteropPanel />}
+      {tab === "timetravel" && <TimeTravelPanel />}
     </div>
   );
 }

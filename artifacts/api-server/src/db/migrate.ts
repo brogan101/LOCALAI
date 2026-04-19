@@ -182,6 +182,37 @@ export function runMigrations(): void {
 
     CREATE INDEX IF NOT EXISTS idx_async_jobs_status
       ON async_jobs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS benchmark_runs (
+      id           TEXT PRIMARY KEY,
+      prompt       TEXT NOT NULL,
+      created_at   TEXT NOT NULL,
+      judge_model  TEXT NOT NULL,
+      results_json TEXT NOT NULL DEFAULT '[]'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_runs_created
+      ON benchmark_runs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS pinboard_items (
+      id             TEXT PRIMARY KEY,
+      kind           TEXT NOT NULL DEFAULT 'text',
+      title          TEXT NOT NULL,
+      content        TEXT NOT NULL,
+      file_path      TEXT,
+      workspace_path TEXT,
+      created_at     TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pinboard_items_created
+      ON pinboard_items(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS session_token_budgets (
+      session_id    TEXT PRIMARY KEY,
+      budget_tokens INTEGER NOT NULL,
+      used_tokens   INTEGER NOT NULL DEFAULT 0,
+      updated_at    TEXT NOT NULL
+    );
   `);
 }
 

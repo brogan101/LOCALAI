@@ -17,8 +17,12 @@ import {
   Zap,
   Filter,
   History,
+  BarChart2,
+  Award,
+  Timer,
+  Star,
 } from "lucide-react";
-import api, { type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry } from "../api.js";
+import api, { type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry, type BenchmarkRun } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -581,6 +585,140 @@ function PullHistoryTab({ onRePull }: { onRePull: (name: string) => void }) {
   );
 }
 
+// ── Benchmark tab (8.1) ───────────────────────────────────────────────────────
+
+function BenchmarkTab() {
+  const qc = useQueryClient();
+  const [runId, setRunId] = useState<string | null>(null);
+
+  const runsQ = useQuery({
+    queryKey: ["benchmark-runs"],
+    queryFn:  () => api.benchmarkApi.list(),
+    staleTime: 10_000,
+  });
+
+  const runMut = useMutation({
+    mutationFn: () => api.benchmarkApi.start([]),
+    onSuccess:  (data) => {
+      setRunId(data.run.id);
+      void qc.invalidateQueries({ queryKey: ["benchmark-runs"] });
+    },
+  });
+
+  const activeRunQ = useQuery({
+    queryKey: ["benchmark-run", runId],
+    queryFn:  () => api.benchmarkApi.get(runId!),
+    enabled:  !!runId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.run?.status;
+      return status === "running" ? 2_000 : false;
+    },
+  });
+
+  const runs: BenchmarkRun[] = runsQ.data?.runs ?? [];
+  const activeRun = activeRunQ.data?.run ?? runs[0] ?? null;
+  const results = activeRun?.results ?? [];
+  const isRunning = activeRun?.status === "running" || runMut.isPending;
+
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-4">
+      {/* Controls */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>Model Benchmark</h2>
+          <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>
+            Runs a standard prompt across all installed models and ranks by quality + speed.
+          </p>
+        </div>
+        <button
+          onClick={() => runMut.mutate()}
+          disabled={isRunning}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50"
+          style={{ background: "var(--color-accent)", color: "#fff" }}>
+          {isRunning
+            ? <><Loader2 size={13} className="animate-spin" /> Running…</>
+            : <><BarChart2 size={13} /> Run Benchmark</>}
+        </button>
+      </div>
+
+      {/* Past runs selector */}
+      {runs.length > 1 && (
+        <div className="flex gap-2 mb-4 flex-wrap">
+          {runs.map(r => (
+            <button
+              key={r.id}
+              onClick={() => setRunId(r.id)}
+              className="text-xs px-2.5 py-1 rounded-lg"
+              style={{
+                background: (activeRun?.id === r.id) ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "var(--color-elevated)",
+                color: (activeRun?.id === r.id) ? "var(--color-foreground)" : "var(--color-muted)",
+                border: "1px solid var(--color-border)",
+              }}>
+              {new Date(r.createdAt).toLocaleString()}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Results table */}
+      {isRunning && results.length === 0 && (
+        <div className="flex items-center gap-2 py-8 justify-center text-sm" style={{ color: "var(--color-muted)" }}>
+          <Loader2 size={16} className="animate-spin" /> Benchmarking models… this may take a few minutes.
+        </div>
+      )}
+      {!isRunning && runs.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-12 gap-3">
+          <BarChart2 size={28} style={{ color: "var(--color-muted)" }} />
+          <span className="text-sm" style={{ color: "var(--color-muted)" }}>No benchmarks run yet. Click "Run Benchmark" to start.</span>
+        </div>
+      )}
+      {results.length > 0 && (
+        <div className="space-y-2">
+          {results.map((r, i) => (
+            <div key={r.model} className="flex items-start gap-3 p-3 rounded-xl"
+              style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+              {/* Rank badge */}
+              <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-sm font-bold"
+                style={{
+                  background: i === 0
+                    ? "color-mix(in srgb, var(--color-success) 20%, transparent)"
+                    : i === 1
+                      ? "color-mix(in srgb, var(--color-info) 15%, transparent)"
+                      : "var(--color-elevated)",
+                  color: i === 0
+                    ? "var(--color-success)"
+                    : i === 1
+                      ? "var(--color-info)"
+                      : "var(--color-muted)",
+                }}>
+                {i === 0 ? <Award size={14} /> : i + 1}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-medium text-sm truncate" style={{ color: "var(--color-foreground)" }}>{r.model}</span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {Array.from({ length: 10 }, (_, j) => (
+                      <div key={j} className="w-1.5 h-3 rounded-sm"
+                        style={{ background: j < r.score ? "var(--color-accent)" : "var(--color-elevated)" }} />
+                    ))}
+                    <span className="text-xs ml-1 font-semibold" style={{ color: "var(--color-accent)" }}>{r.score}/10</span>
+                  </div>
+                </div>
+                <p className="text-xs mb-2" style={{ color: "var(--color-muted)" }}>{r.scoreReason}</p>
+                <div className="flex items-center gap-3 text-xs" style={{ color: "var(--color-muted)" }}>
+                  <span className="flex items-center gap-1"><Timer size={10} /> {(r.durationMs / 1000).toFixed(1)}s</span>
+                  <span className="flex items-center gap-1"><Star size={10} /> {r.tokensOut} tokens</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Models page ───────────────────────────────────────────────────────────────
 
 export default function ModelsPage() {
@@ -588,7 +726,7 @@ export default function ModelsPage() {
   const [showPull, setShowPull] = useState(false);
   const [pullInitialName, setPullInitialName] = useState("");
   const [showProgress, setShowProgress] = useState(true);
-  const [tab, setTab] = useState<"installed" | "catalog" | "history">("installed");
+  const [tab, setTab] = useState<"installed" | "catalog" | "history" | "benchmark">("installed");
   const qc = useQueryClient();
 
   function openPull(name = "") {
@@ -674,7 +812,7 @@ export default function ModelsPage() {
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-6 pt-3 shrink-0"
         style={{ borderBottom: "1px solid var(--color-border)" }}>
-        {(["installed", "catalog", "history"] as const).map(t => (
+        {(["installed", "catalog", "history", "benchmark"] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -774,6 +912,8 @@ export default function ModelsPage() {
       {tab === "catalog" && <CatalogTab onPull={openPull} />}
 
       {tab === "history" && <PullHistoryTab onRePull={openPull} />}
+
+      {tab === "benchmark" && <BenchmarkTab />}
 
       {/* Pull modal */}
       {showPull && <PullModal initialName={pullInitialName} onClose={() => { setShowPull(false); setPullInitialName(""); }} />}

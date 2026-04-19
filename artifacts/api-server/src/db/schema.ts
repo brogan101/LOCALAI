@@ -153,6 +153,37 @@ export const asyncJobs = sqliteTable("async_jobs", {
   finishedAt:   text("finished_at"),
 });
 
+// ── benchmark_runs ────────────────────────────────────────────────────────────
+
+export const benchmarkRuns = sqliteTable("benchmark_runs", {
+  id:          text("id").primaryKey(),
+  prompt:      text("prompt").notNull(),
+  createdAt:   text("created_at").notNull(),
+  judgeModel:  text("judge_model").notNull(),
+  resultsJson: text("results_json").notNull().default("[]"),
+});
+
+// ── pinboard_items ────────────────────────────────────────────────────────────
+
+export const pinboardItems = sqliteTable("pinboard_items", {
+  id:            text("id").primaryKey(),
+  kind:          text("kind").notNull().default("text"),   // text | file | snippet
+  title:         text("title").notNull(),
+  content:       text("content").notNull(),
+  filePath:      text("file_path"),
+  workspacePath: text("workspace_path"),
+  createdAt:     text("created_at").notNull(),
+});
+
+// ── session_token_budgets ─────────────────────────────────────────────────────
+
+export const sessionTokenBudgets = sqliteTable("session_token_budgets", {
+  sessionId:    text("session_id").primaryKey(),
+  budgetTokens: integer("budget_tokens").notNull(),
+  usedTokens:   integer("used_tokens").notNull().default(0),
+  updatedAt:    text("updated_at").notNull(),
+});
+
 // ── Inferred types ────────────────────────────────────────────────────────────
 
 export type ChatSession      = typeof chatSessions.$inferSelect;
@@ -170,3 +201,6 @@ export type AuditLogRow      = typeof auditLog.$inferSelect;
 export type RefactorPlanRow  = typeof refactorPlans.$inferSelect;
 export type RefactorJobRow   = typeof refactorJobs.$inferSelect;
 export type AsyncJobRow      = typeof asyncJobs.$inferSelect;
+export type BenchmarkRunRow  = typeof benchmarkRuns.$inferSelect;
+export type PinboardItemRow  = typeof pinboardItems.$inferSelect;
+export type SessionBudgetRow = typeof sessionTokenBudgets.$inferSelect;

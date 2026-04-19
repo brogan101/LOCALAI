@@ -6,7 +6,7 @@ import {
   CheckCircle, AlertTriangle, XCircle, GitBranch,
   Brain, Search, Play, ChevronDown, ChevronRight,
   FileCode, Loader2, Database, Camera, Archive, Copy,
-  File, Terminal,
+  File, Terminal, Share2,
 } from "lucide-react";
 import api, {
   type ContextWorkspaceSummary,
@@ -72,6 +72,7 @@ function ProjectCard({
   onSnapshot,
   onArchive,
   onClone,
+  onGitPackage,
   busy,
 }: {
   project: WorkspaceProject;
@@ -81,6 +82,7 @@ function ProjectCard({
   onSnapshot: () => void;
   onArchive: () => void;
   onClone: () => void;
+  onGitPackage: () => void;
   busy: boolean;
 }) {
   const { label: rLabel, color: rColor } = readinessBadge(project.aiReadiness);
@@ -162,6 +164,11 @@ function ProjectCard({
             className="p-1.5 rounded-lg"
             style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
             <Copy size={13} />
+          </button>
+          <button onClick={onGitPackage} title="Package for GitHub (.gitignore + README)" disabled={busy}
+            className="p-1.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", color: project.hasGit ? "var(--color-success)" : "var(--color-muted)" }}>
+            <GitBranch size={13} />
           </button>
           <button onClick={onDelete} title="Remove from registry"
             className="p-1.5 rounded-lg"
@@ -711,6 +718,96 @@ function IntelligenceTab({ projects }: { projects: WorkspaceProject[] }) {
       {activeJobId && (
         <JobPanel jobId={activeJobId} onClose={() => setActiveJobId(null)} />
       )}
+
+      {/* Knowledge Graph (8.10) */}
+      <KnowledgeGraphPanel />
+    </div>
+  );
+}
+
+// ── Knowledge Graph visualizer (8.10) ────────────────────────────────────────
+
+function KnowledgeGraphPanel() {
+  const collectionsQ = useQuery({
+    queryKey: ["rag-collections"],
+    queryFn:  () => api.ragApi.listCollections(),
+    staleTime: 30_000,
+  });
+
+  const collections = collectionsQ.data?.collections ?? [];
+
+  if (collectionsQ.isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-6 text-sm" style={{ color: "var(--color-muted)" }}>
+        <Loader2 size={14} className="animate-spin" /> Loading knowledge graph…
+      </div>
+    );
+  }
+
+  if (collections.length === 0) {
+    return (
+      <div className="py-6 text-center text-sm" style={{ color: "var(--color-muted)" }}>
+        No RAG collections yet — ingest documents to build the knowledge graph.
+      </div>
+    );
+  }
+
+  // Layout: place nodes in a circle
+  const cx = 300, cy = 180, r = 130;
+  const nodes = collections.map((col, i) => {
+    const angle = (2 * Math.PI * i) / collections.length - Math.PI / 2;
+    return {
+      id: col.id,
+      name: col.name,
+      chunks: col.chunkCount,
+      x: cx + r * Math.cos(angle),
+      y: cy + r * Math.sin(angle),
+    };
+  });
+
+  // Connect every node to a center hub node
+  const hubX = cx, hubY = cy;
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Share2 size={14} style={{ color: "var(--color-accent)" }} />
+        <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>Knowledge Graph</span>
+        <span className="text-xs ml-1" style={{ color: "var(--color-muted)" }}>{collections.length} collection(s)</span>
+      </div>
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+        <svg viewBox="0 0 600 360" style={{ width: "100%", height: "auto" }}>
+          {/* Hub node */}
+          <circle cx={hubX} cy={hubY} r={22} fill="color-mix(in srgb, var(--color-accent) 25%, transparent)" stroke="var(--color-accent)" strokeWidth={1.5} />
+          <text x={hubX} y={hubY + 5} textAnchor="middle" fontSize={10} fill="var(--color-accent)" fontWeight="600">RAG</text>
+
+          {nodes.map(node => (
+            <g key={node.id}>
+              {/* Edge from hub to node */}
+              <line
+                x1={hubX} y1={hubY} x2={node.x} y2={node.y}
+                stroke="var(--color-border)" strokeWidth={1.5}
+              />
+              {/* Node circle — size proportional to chunk count */}
+              <circle
+                cx={node.x} cy={node.y}
+                r={Math.min(28, 14 + node.chunks * 0.3)}
+                fill="color-mix(in srgb, var(--color-info) 15%, transparent)"
+                stroke="var(--color-info)" strokeWidth={1}
+              />
+              {/* Label */}
+              <text x={node.x} y={node.y - (Math.min(28, 14 + node.chunks * 0.3) + 6)}
+                textAnchor="middle" fontSize={10} fill="var(--color-foreground)" fontWeight="500">
+                {node.name.length > 16 ? node.name.slice(0, 14) + "…" : node.name}
+              </text>
+              <text x={node.x} y={node.y + 4}
+                textAnchor="middle" fontSize={9} fill="var(--color-muted)">
+                {node.chunks} chunks
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
     </div>
   );
 }
@@ -1050,6 +1147,43 @@ export default function WorkspacePage() {
     }
   }
 
+  async function gitPackageProject(id: string, projectPath: string, projectName: string) {
+    setBusy(id, true);
+    try {
+      const gitignore = `# Node
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+`;
+      const readme = `# ${projectName}
+
+> Generated by LocalAI Control Center
+
+## Overview
+
+${projectName} is a project managed with LocalAI.
+
+## Getting Started
+
+\`\`\`bash
+npm install
+npm run dev
+\`\`\`
+`;
+      await api.system.sovereignEdit(`${projectPath}/.gitignore`, gitignore);
+      await api.system.sovereignEdit(`${projectPath}/README.md`, readme);
+      setMsg(id, "GitHub package created: .gitignore + README.md");
+    } catch (e) {
+      setMsg(id, e instanceof Error ? e.message : "Git package failed");
+    } finally {
+      setBusy(id, false);
+    }
+  }
+
   const projects = (projectsQ.data?.projects ?? []) as WorkspaceProject[];
   const templates = (templatesQ.data?.templates ?? []) as WorkspaceTemplate[];
   const pinned  = projects.filter((p) => p.pinned);
@@ -1167,6 +1301,7 @@ export default function WorkspacePage() {
                       onSnapshot={() => snapshotProject(p.id)}
                       onArchive={() => archiveProject(p.id)}
                       onClone={() => cloneProject(p.id, p.path)}
+                      onGitPackage={() => gitPackageProject(p.id, p.path, p.name)}
                     />
                     {messages[p.id] && (
                       <div className="mt-1 text-xs px-2" style={{ color: "var(--color-muted)" }}>{messages[p.id]}</div>
@@ -1194,6 +1329,7 @@ export default function WorkspacePage() {
                       onSnapshot={() => snapshotProject(p.id)}
                       onArchive={() => archiveProject(p.id)}
                       onClone={() => cloneProject(p.id, p.path)}
+                      onGitPackage={() => gitPackageProject(p.id, p.path, p.name)}
                     />
                     {messages[p.id] && (
                       <div className="mt-1 text-xs px-2" style={{ color: "var(--color-muted)" }}>{messages[p.id]}</div>
