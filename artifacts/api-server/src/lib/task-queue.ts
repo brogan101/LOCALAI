@@ -43,6 +43,69 @@ export interface EnqueueOptions {
   metadata?: Record<string, unknown>;
 }
 
+// ── Lazy DB helpers (avoid circular import at module load time) ────────────────
+
+function getDb() {
+  return import("../db/database.js");
+}
+
+function jobToRow(job: AsyncJob) {
+  return {
+    id:           job.id,
+    name:         job.name,
+    type:         job.type,
+    status:       job.status,
+    progress:     job.progress,
+    message:      job.message,
+    error:        job.error ?? null,
+    resultJson:   job.result !== undefined ? JSON.stringify(job.result) : null,
+    metadataJson: job.metadata ? JSON.stringify(job.metadata) : null,
+    capability:   job.capability ?? null,
+    createdAt:    job.createdAt,
+    startedAt:    job.startedAt ?? null,
+    finishedAt:   job.finishedAt ?? null,
+  };
+}
+
+async function dbInsertJob(job: AsyncJob): Promise<void> {
+  try {
+    const { sqlite } = await getDb();
+    const r = jobToRow(job);
+    sqlite.prepare(`
+      INSERT OR IGNORE INTO async_jobs
+        (id, name, type, status, progress, message, error,
+         result_json, metadata_json, capability,
+         created_at, started_at, finished_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      r.id, r.name, r.type, r.status, r.progress, r.message, r.error,
+      r.resultJson, r.metadataJson, r.capability,
+      r.createdAt, r.startedAt, r.finishedAt,
+    );
+  } catch { /* non-fatal */ }
+}
+
+async function dbUpdateJob(job: AsyncJob): Promise<void> {
+  try {
+    const { sqlite } = await getDb();
+    const r = jobToRow(job);
+    sqlite.prepare(`
+      UPDATE async_jobs SET
+        status = ?, progress = ?, message = ?, error = ?,
+        result_json = ?, metadata_json = ?,
+        started_at = ?, finished_at = ?
+      WHERE id = ?
+    `).run(
+      r.status, r.progress, r.message, r.error,
+      r.resultJson, r.metadataJson,
+      r.startedAt, r.finishedAt,
+      r.id,
+    );
+  } catch { /* non-fatal */ }
+}
+
+// ── Task queue ────────────────────────────────────────────────────────────────
+
 class AsyncTaskQueue {
   private jobs = new Map<string, AsyncJob>();
   private queue: Array<{ job: AsyncJob; handler: JobHandler }> = [];
@@ -64,6 +127,54 @@ class AsyncTaskQueue {
     return this.jobs.get(jobId) ?? null;
   }
 
+  /**
+   * Called once after DB migrations complete.
+   * Loads incomplete jobs back into the in-memory map and marks any that were
+   * mid-flight (running / queued) as failed with a restart notice.
+   */
+  async hydrate(): Promise<void> {
+    try {
+      const { sqlite } = await getDb();
+      const rows = sqlite.prepare(`
+        SELECT id, name, type, status, progress, message, error,
+               result_json, metadata_json, capability,
+               created_at, started_at, finished_at
+        FROM async_jobs
+        ORDER BY created_at DESC
+        LIMIT 500
+      `).all() as Array<Record<string, unknown>>;
+
+      for (const r of rows) {
+        const job: AsyncJob = {
+          id:         r["id"] as string,
+          name:       r["name"] as string,
+          type:       r["type"] as string,
+          status:     r["status"] as JobStatus,
+          progress:   r["progress"] as number,
+          message:    r["message"] as string,
+          error:      (r["error"] as string | null) ?? undefined,
+          result:     r["result_json"] ? JSON.parse(r["result_json"] as string) : undefined,
+          metadata:   r["metadata_json"] ? JSON.parse(r["metadata_json"] as string) as Record<string, unknown> : undefined,
+          capability: (r["capability"] as string | null) ?? undefined,
+          createdAt:  r["created_at"] as string,
+          startedAt:  (r["started_at"] as string | null) ?? undefined,
+          finishedAt: (r["finished_at"] as string | null) ?? undefined,
+        };
+
+        // Mark mid-flight jobs as failed
+        if (job.status === "running" || job.status === "queued") {
+          job.status     = "failed";
+          job.finishedAt = new Date().toISOString();
+          job.error      = "Process was restarted";
+          job.message    = "Process was restarted";
+          await dbUpdateJob(job);
+        }
+
+        this.jobs.set(job.id, job);
+      }
+    } catch { /* DB not ready — start fresh */ }
+  }
+
   enqueue(
     name: string,
     type: string,
@@ -71,24 +182,25 @@ class AsyncTaskQueue {
     options: EnqueueOptions = {},
   ): AsyncJob {
     const job: AsyncJob = {
-      id: randomUUID(),
+      id:         randomUUID(),
       name,
       type,
-      status: "queued",
-      progress: 0,
-      createdAt: new Date().toISOString(),
+      status:     "queued",
+      progress:   0,
+      createdAt:  new Date().toISOString(),
       capability: options.capability,
-      message: "Queued",
-      metadata: options.metadata,
+      message:    "Queued",
+      metadata:   options.metadata,
     };
     this.jobs.set(job.id, job);
     this.emitter.emit("job", job);
     thoughtLog.publish({
       category: "queue",
-      title: "Task Queued",
-      message: `${job.name} entered the async queue`,
+      title:    "Task Queued",
+      message:  `${job.name} entered the async queue`,
       metadata: { jobId: job.id, type: job.type, capability: job.capability },
     });
+    void dbInsertJob(job);
     this.queue.push({ job, handler });
     void this.drain();
     return job;
@@ -97,6 +209,7 @@ class AsyncTaskQueue {
   private updateJob(job: AsyncJob): void {
     this.jobs.set(job.id, job);
     this.emitter.emit("job", job);
+    void dbUpdateJob(job);
   }
 
   private async drain(): Promise<void> {
@@ -106,9 +219,9 @@ class AsyncTaskQueue {
     this.running = true;
     const { job, handler } = next;
     try {
-      job.status = "running";
+      job.status    = "running";
       job.startedAt = new Date().toISOString();
-      job.message = "Running";
+      job.message   = "Running";
       this.updateJob(job);
 
       if (job.capability) {
@@ -119,7 +232,7 @@ class AsyncTaskQueue {
         job,
         updateProgress: (progress, message, metadata) => {
           job.progress = Math.max(0, Math.min(100, progress));
-          job.message = message;
+          job.message  = message;
           job.metadata = metadata
             ? { ...(job.metadata || {}), ...metadata }
             : job.metadata;
@@ -135,41 +248,41 @@ class AsyncTaskQueue {
         },
       };
 
-      const result = await handler(context);
-      job.status = "completed";
-      job.progress = 100;
-      job.result = result;
-      job.finishedAt = new Date().toISOString();
-      job.message = "Completed";
+      const result      = await handler(context);
+      job.status        = "completed";
+      job.progress      = 100;
+      job.result        = result;
+      job.finishedAt    = new Date().toISOString();
+      job.message       = "Completed";
       this.updateJob(job);
       thoughtLog.publish({
         category: "queue",
-        title: "Task Completed",
-        message: `${job.name} finished successfully`,
+        title:    "Task Completed",
+        message:  `${job.name} finished successfully`,
         metadata: { jobId: job.id, type: job.type },
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      job.status = "failed";
-      job.finishedAt = new Date().toISOString();
-      job.error = message;
-      job.message = message;
+      const message   = error instanceof Error ? error.message : String(error);
+      job.status      = "failed";
+      job.finishedAt  = new Date().toISOString();
+      job.error       = message;
+      job.message     = message;
       this.updateJob(job);
       logger.error({ err: error, jobId: job.id, type: job.type }, "Async task failed");
       thoughtLog.publish({
-        level: "error",
+        level:    "error",
         category: "queue",
-        title: "Task Failed",
-        message: `${job.name} failed: ${message}`,
+        title:    "Task Failed",
+        message:  `${job.name} failed: ${message}`,
         metadata: { jobId: job.id, type: job.type },
       });
     } finally {
       if (job.capability) {
         if (job.status === "failed") {
           await stateOrchestrator.setCapability(job.capability, {
-            active: false,
-            phase: "error",
-            detail: job.error,
+            active:        false,
+            phase:         "error",
+            detail:        job.error,
             assignedJobId: undefined,
           });
         } else {

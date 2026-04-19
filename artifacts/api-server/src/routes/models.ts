@@ -18,10 +18,13 @@ import { stateOrchestrator } from "../lib/state-orchestrator.js";
 import { discoverVerifiedModels, verifyOllamaModelSpec } from "../lib/model-discovery.js";
 import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { taskQueue } from "../lib/task-queue.js";
+import { db } from "../db/database.js";
+import { modelPullHistory } from "../db/schema.js";
+import { desc, eq } from "drizzle-orm";
+import { modelRolesService } from "../lib/model-roles-service.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
-const ROLES_FILE = path.join(TOOLS_DIR, "model-roles.json");
 const MODEL_STATES_FILE = path.join(TOOLS_DIR, "model-states.json");
 const UPDATER_MANIFEST_FILE = path.join(TOOLS_DIR, "updater-manifest.json");
 
@@ -69,16 +72,12 @@ const POPULAR_MODELS = [
 ];
 
 async function loadRoles(): Promise<Record<string, string>> {
-  try {
-    if (!existsSync(ROLES_FILE)) return {};
-    return JSON.parse(await readFile(ROLES_FILE, "utf-8"));
-  } catch {
-    return {};
-  }
+  return modelRolesService.getRoles();
 }
 
 async function saveRoles(roles: Record<string, string>): Promise<void> {
-  await writeManagedJson(ROLES_FILE, roles);
+  await writeManagedJson(modelRolesService.filePath, roles);
+  modelRolesService.invalidate();
 }
 
 async function loadModelStateHints(): Promise<Record<string, any>> {
@@ -400,6 +399,34 @@ router.delete("/models/:modelName/delete", async (req, res) => {
       message: `Failed to delete ${modelName}`,
       details: error instanceof Error ? error.message : String(error),
     });
+  }
+});
+
+// ── GET /models/pull-history — list past pull events ─────────────────────────
+
+router.get("/models/pull-history", async (req, res) => {
+  const limit = Math.min(Number(req.query["limit"]) || 50, 200);
+  const modelFilter = typeof req.query["model"] === "string" ? req.query["model"].trim() : "";
+
+  try {
+    let rows;
+    if (modelFilter) {
+      rows = await db
+        .select()
+        .from(modelPullHistory)
+        .where(eq(modelPullHistory.modelName, modelFilter))
+        .orderBy(desc(modelPullHistory.startedAt))
+        .limit(limit);
+    } else {
+      rows = await db
+        .select()
+        .from(modelPullHistory)
+        .orderBy(desc(modelPullHistory.startedAt))
+        .limit(limit);
+    }
+    return res.json({ success: true, history: rows });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: String(err), history: [] });
   }
 });
 

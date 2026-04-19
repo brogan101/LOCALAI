@@ -1,7 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Zap, Image, Box, RefreshCw, Play, Loader, CheckCircle, AlertTriangle, Code2, Printer } from "lucide-react";
-import api, { type CadScriptResult, type ImageGenResult, type ImageGenStatus, type GCodeOptimizeResult, type PromptArchitectResult } from "../api.js";
+import {
+  Zap, Image, Box, RefreshCw, Play, Loader, CheckCircle, AlertTriangle,
+  Code2, Printer, X, FolderOpen, ChevronRight,
+  BookOpen, Car, Terminal, FileSearch, FileText,
+} from "lucide-react";
+import api, {
+  type CadScriptResult, type ImageGenResult, type ImageGenStatus,
+  type GCodeOptimizeResult, type PromptArchitectResult, type WorkspacePreset,
+  type PresetEnterResult,
+} from "../api.js";
+import { WorkspaceView } from "./WorkspaceView.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -14,7 +23,7 @@ interface StudioTemplate {
   stack: string[];
 }
 
-type StudioTab = "vibe" | "imagegen" | "cad" | "vibecheck";
+type StudioTab = "presets" | "vibe" | "imagegen" | "cad" | "vibecheck";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -48,6 +57,263 @@ function StatusPill({ status }: { status: string }) {
       style={{ background: `color-mix(in srgb, ${color} 15%, transparent)`, color }}>
       {status}
     </span>
+  );
+}
+
+// ── Icon resolver — maps preset icon string to Lucide component ───────────────
+
+function PresetIcon({ name, size = 20 }: { name: string; size?: number }) {
+  const style = { flexShrink: 0 as const };
+  switch (name) {
+    case "Code2":       return <Code2       size={size} style={style} />;
+    case "Box":         return <Box         size={size} style={style} />;
+    case "Image":       return <Image       size={size} style={style} />;
+    case "FileText":    return <FileText    size={size} style={style} />;
+    case "BookOpen":    return <BookOpen    size={size} style={style} />;
+    case "Car":         return <Car         size={size} style={style} />;
+    case "Terminal":    return <Terminal    size={size} style={style} />;
+    case "FileSearch":  return <FileSearch  size={size} style={style} />;
+    case "Printer":     return <Printer     size={size} style={style} />;
+    case "Zap":         return <Zap         size={size} style={style} />;
+    default:            return <Zap         size={size} style={style} />;
+  }
+}
+
+// ── Readiness dot ─────────────────────────────────────────────────────────────
+
+function ReadinessDot({ readiness }: { readiness?: string }) {
+  const color =
+    readiness === "ready"   ? "var(--color-success)" :
+    readiness === "partial" ? "var(--color-warn)"    :
+                              "var(--color-error)";
+  const label =
+    readiness === "ready"   ? "All models available" :
+    readiness === "partial" ? "Some models missing"  :
+                              "Models not installed";
+  return (
+    <div
+      title={label}
+      className="w-2.5 h-2.5 rounded-full shrink-0"
+      style={{ background: color, boxShadow: `0 0 4px ${color}` }}
+    />
+  );
+}
+
+// ── Preset Enter Modal ────────────────────────────────────────────────────────
+
+function PresetModal({
+  preset,
+  onClose,
+}: {
+  preset: WorkspacePreset;
+  onClose: () => void;
+}) {
+  const defaultPath = preset.defaultWorkspacePathTemplate
+    .replace("%USERPROFILE%", "~");
+  const [workspacePath, setWorkspacePath] = useState(defaultPath);
+  const [enterResult, setEnterResult] = useState<PresetEnterResult | null>(null);
+
+  const enterMut = useMutation({
+    mutationFn: () => api.studios.presets.enter(preset.id, workspacePath.trim()),
+    onSuccess: (data) => {
+      if (data.success) {
+        setEnterResult(data);
+      }
+    },
+  });
+
+  // Show full-screen workspace view when entered
+  if (enterResult) {
+    return (
+      <WorkspaceView
+        preset={preset}
+        workspacePath={workspacePath.trim()}
+        enterResult={enterResult}
+        onClose={() => { setEnterResult(null); onClose(); }}
+      />
+    );
+  }
+
+  const missing = preset.roleStatus?.filter(r => !r.installed) ?? [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.6)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-md rounded-2xl overflow-hidden"
+        style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4"
+          style={{ borderBottom: "1px solid var(--color-border)" }}>
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+            style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)" }}>
+            <PresetIcon name={preset.icon} size={18} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold" style={{ color: "var(--color-foreground)" }}>{preset.name}</div>
+            <div className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>{preset.description}</div>
+          </div>
+          <button onClick={onClose} style={{ color: "var(--color-muted)" }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Workspace path */}
+          <div>
+            <div className="text-xs font-medium mb-1.5" style={{ color: "var(--color-muted)" }}>
+              Workspace path
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={workspacePath}
+                onChange={e => setWorkspacePath(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg text-sm font-mono outline-none"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+              />
+              <button
+                onClick={() => {}}
+                title="Browse (not supported in browser)"
+                className="px-2.5 py-2 rounded-lg"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}>
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </div>
+
+          {/* Model preflight */}
+          <div>
+            <div className="text-xs font-medium mb-1.5" style={{ color: "var(--color-muted)" }}>
+              Model preflight
+            </div>
+            <div className="rounded-lg overflow-hidden"
+              style={{ border: "1px solid var(--color-border)" }}>
+              {(preset.roleStatus ?? preset.requiredRoles.map(r => ({ role: r, modelName: null, installed: false }))).map((rs, i) => (
+                <div key={i} className="flex items-center gap-2.5 px-3 py-2 text-xs"
+                  style={{ borderBottom: i < (preset.roleStatus?.length ?? 0) - 1 ? "1px solid var(--color-border)" : undefined }}>
+                  {rs.installed
+                    ? <CheckCircle size={12} style={{ color: "var(--color-success)", flexShrink: 0 }} />
+                    : <AlertTriangle size={12} style={{ color: "var(--color-warn)", flexShrink: 0 }} />}
+                  <span style={{ color: "var(--color-muted)" }}>{rs.role}</span>
+                  <span className="flex-1 truncate font-mono text-right" style={{ color: rs.installed ? "var(--color-foreground)" : "var(--color-warn)" }}>
+                    {rs.modelName ?? "not assigned"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {missing.length > 0 && (
+              <div className="mt-1.5 text-xs" style={{ color: "var(--color-warn)" }}>
+                {missing.length} model{missing.length !== 1 ? "s" : ""} missing — pull them in Models → Catalog before entering.
+              </div>
+            )}
+          </div>
+
+          {/* Toolset badges */}
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(preset.toolset)
+              .filter(([, v]) => v)
+              .map(([k]) => (
+                <span key={k} className="text-xs px-2 py-0.5 rounded"
+                  style={{ background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", color: "var(--color-accent)", border: "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)" }}>
+                  {k}
+                </span>
+              ))}
+          </div>
+
+          {/* Enter button */}
+          <button
+            onClick={() => enterMut.mutate()}
+            disabled={enterMut.isPending || !workspacePath.trim()}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-40"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>
+            {enterMut.isPending
+              ? <><Loader size={14} className="animate-spin" /> Entering…</>
+              : <><Play size={14} /> Enter Workspace</>}
+          </button>
+
+          {enterMut.isError && (
+            <div className="text-xs text-center" style={{ color: "var(--color-error)" }}>
+              {enterMut.error instanceof Error ? enterMut.error.message : "Failed to enter workspace"}
+            </div>
+          )}
+          {enterMut.data && !enterMut.data.success && (
+            <div className="text-xs text-center" style={{ color: "var(--color-error)" }}>
+              {(enterMut.data as { message?: string }).message ?? "Server returned failure"}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Preset Grid (step 4.3) ────────────────────────────────────────────────────
+
+function PresetGrid() {
+  const [selected, setSelected] = useState<WorkspacePreset | null>(null);
+
+  const presetsQ = useQuery({
+    queryKey: ["studios-presets"],
+    queryFn: () => api.studios.presets.list(),
+    staleTime: 60_000,
+  });
+
+  const presets = presetsQ.data?.presets ?? [];
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {presetsQ.isLoading && (
+          <div className="col-span-5 py-12 text-center text-sm" style={{ color: "var(--color-muted)" }}>
+            <Loader size={20} className="animate-spin inline mb-2" />
+            <div>Loading presets…</div>
+          </div>
+        )}
+        {presets.map((preset) => {
+          const isReady   = preset.readiness === "ready";
+          const isPartial = preset.readiness === "partial";
+          const dotColor  = isReady ? "var(--color-success)" : isPartial ? "var(--color-warn)" : "var(--color-error)";
+          return (
+            <button
+              key={preset.id}
+              onClick={() => setSelected(preset)}
+              className="relative flex flex-col items-start gap-2 p-4 rounded-xl text-left transition-all hover:opacity-90 active:scale-[0.98]"
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+              }}>
+              {/* Readiness dot */}
+              <div className="absolute top-3 right-3 w-2.5 h-2.5 rounded-full"
+                style={{ background: dotColor, boxShadow: `0 0 5px ${dotColor}` }} />
+
+              <div className="w-9 h-9 rounded-lg flex items-center justify-center"
+                style={{ background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", color: "var(--color-accent)" }}>
+                <PresetIcon name={preset.icon} size={17} />
+              </div>
+
+              <div>
+                <div className="text-sm font-semibold leading-tight" style={{ color: "var(--color-foreground)" }}>
+                  {preset.name}
+                </div>
+                <div className="text-xs mt-0.5 line-clamp-2 leading-relaxed" style={{ color: "var(--color-muted)" }}>
+                  {preset.description}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 text-xs mt-auto" style={{ color: "var(--color-accent)" }}>
+                Enter <ChevronRight size={11} />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <PresetModal preset={selected} onClose={() => setSelected(null)} />
+      )}
+    </div>
   );
 }
 
@@ -97,7 +363,6 @@ function VibeCodingTab() {
 
   return (
     <div className="space-y-6">
-      {/* Template picker */}
       <Card>
         <CardHeader icon={Zap} title="Choose Template" />
         <div className="p-4 space-y-4">
@@ -128,7 +393,6 @@ function VibeCodingTab() {
         </div>
       </Card>
 
-      {/* Brief + build */}
       <Card>
         <CardHeader icon={Play} title="Build Config" />
         <div className="p-4 space-y-4">
@@ -189,7 +453,6 @@ function VibeCodingTab() {
         </div>
       </Card>
 
-      {/* Build status */}
       {buildJobId && (
         <Card>
           <CardHeader icon={Loader} title="Build Status" />
@@ -478,7 +741,7 @@ function VibeCheckTab() {
             </div>
           </div>
           <div>
-            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Start command (optional — leave empty if already running)</div>
+            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Start command (optional)</div>
             <input
               value={startCommand}
               onChange={(e) => setStartCommand(e.target.value)}
@@ -639,7 +902,7 @@ function GCodeTab() {
   );
 }
 
-// ── Prompt Expand Panel (standalone) ─────────────────────────────────────────
+// ── Prompt Expand Panel ───────────────────────────────────────────────────────
 
 function PromptExpandCard() {
   const [prompt, setPrompt] = useState("");
@@ -714,7 +977,7 @@ function PromptExpandCard() {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function StudiosPage() {
-  const [tab, setTab] = useState<StudioTab>("vibe");
+  const [tab, setTab] = useState<StudioTab>("presets");
   const qc = useQueryClient();
 
   const catalogQ = useQuery({
@@ -726,10 +989,11 @@ export default function StudiosPage() {
   const workspaces = (catalogQ.data?.workspaces ?? []) as Array<{ name?: string; path?: string; createdAt?: string }>;
 
   const tabs: Array<{ id: StudioTab; label: string; icon: React.ElementType }> = [
-    { id: "vibe",      label: "Vibe Coding",      icon: Zap },
-    { id: "vibecheck", label: "VibeCheck",         icon: Code2 },
-    { id: "imagegen",  label: "Image Generation", icon: Image },
-    { id: "cad",       label: "CAD / Hardware",   icon: Box },
+    { id: "presets",    label: "Workspace Presets", icon: Zap },
+    { id: "vibe",       label: "Vibe Coding",       icon: Code2 },
+    { id: "vibecheck",  label: "VibeCheck",         icon: CheckCircle },
+    { id: "imagegen",   label: "Image Gen",         icon: Image },
+    { id: "cad",        label: "CAD / Hardware",    icon: Box },
   ];
 
   return (
@@ -741,17 +1005,20 @@ export default function StudiosPage() {
         <div>
           <h1 className="text-xl font-bold" style={{ color: "var(--color-foreground)" }}>Studios</h1>
           <p className="text-sm mt-0.5" style={{ color: "var(--color-muted)" }}>
-            Autonomous build pipelines · image generation · CAD scripting
+            Workspace presets · vibe coding · image generation · CAD scripting
           </p>
         </div>
-        <button onClick={() => void qc.invalidateQueries({ queryKey: ["studios-catalog"] })}
+        <button onClick={() => {
+          void qc.invalidateQueries({ queryKey: ["studios-catalog"] });
+          void qc.invalidateQueries({ queryKey: ["studios-presets"] });
+        }}
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm"
           style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
           <RefreshCw size={13} />
         </button>
       </div>
 
-      {/* Existing studios */}
+      {/* Existing studios strip */}
       {workspaces.length > 0 && (
         <div className="flex gap-2 overflow-x-auto pb-1">
           {workspaces.map((ws, i) => (
@@ -783,6 +1050,7 @@ export default function StudiosPage() {
       </div>
 
       {/* Tab content */}
+      {tab === "presets"   && <PresetGrid />}
       {tab === "vibe"      && <VibeCodingTab />}
       {tab === "vibecheck" && <VibeCheckTab />}
       {tab === "imagegen"  && (
@@ -791,7 +1059,7 @@ export default function StudiosPage() {
           <ImageGenTab />
         </div>
       )}
-      {tab === "cad"       && (
+      {tab === "cad" && (
         <div className="space-y-6">
           <CadTab />
           <GCodeTab />

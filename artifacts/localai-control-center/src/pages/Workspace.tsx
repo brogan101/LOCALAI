@@ -1,10 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useLocation } from "wouter";
 import {
   Folder, FolderOpen, Pin, Trash2, Plus, RefreshCw, ExternalLink,
   CheckCircle, AlertTriangle, XCircle, GitBranch,
   Brain, Search, Play, ChevronDown, ChevronRight,
   FileCode, Loader2, Database, Camera, Archive, Copy,
+  File, Terminal,
 } from "lucide-react";
 import api, {
   type ContextWorkspaceSummary,
@@ -12,6 +14,7 @@ import api, {
   type RefactorPlan,
   type RefactorJob,
   type RefactorStep,
+  type FilebrowserEntry,
 } from "../api.js";
 
 // ── Types (local — backend returns `unknown[]` but we know the shape) ─────────
@@ -712,11 +715,232 @@ function IntelligenceTab({ projects }: { projects: WorkspaceProject[] }) {
   );
 }
 
+// ── File Browser tab ─────────────────────────────────────────────────────────
+
+function FileTree({
+  path,
+  depth,
+  selectedPath,
+  onSelect,
+}: {
+  path: string;
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (entry: FilebrowserEntry) => void;
+}) {
+  const [expanded, setExpanded] = useState(depth === 0);
+
+  const listQ = useQuery({
+    queryKey: ["filebrowser-list", path],
+    queryFn: () => api.filebrowser.list(path),
+    enabled: expanded,
+    staleTime: 30_000,
+  });
+
+  const entries: FilebrowserEntry[] = listQ.data?.entries ?? [];
+  const dirs  = entries.filter(e =>  e.isDirectory).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => !e.isDirectory).sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div style={{ paddingLeft: depth === 0 ? 0 : 16 }}>
+      {depth === 0 && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="flex items-center gap-1.5 px-2 py-1 text-xs w-full text-left"
+          style={{ color: "var(--color-muted)" }}>
+          <ChevronRight size={12} /> Load…
+        </button>
+      )}
+      {expanded && listQ.isLoading && (
+        <div className="flex items-center gap-1 px-2 py-1 text-xs" style={{ color: "var(--color-muted)" }}>
+          <Loader2 size={11} className="animate-spin" /> Loading…
+        </div>
+      )}
+      {expanded && (
+        <>
+          {dirs.map(entry => (
+            <DirectoryRow key={entry.path} entry={entry} depth={depth} selectedPath={selectedPath} onSelect={onSelect} />
+          ))}
+          {files.map(entry => (
+            <button
+              key={entry.path}
+              onClick={() => onSelect(entry)}
+              className="flex items-center gap-1.5 px-2 py-1 w-full text-left rounded text-xs transition-colors"
+              style={{
+                color:      selectedPath === entry.path ? "var(--color-foreground)" : "var(--color-muted)",
+                background: selectedPath === entry.path ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+              }}>
+              <File size={11} style={{ flexShrink: 0, color: "var(--color-muted)" }} />
+              <span className="truncate">{entry.name}</span>
+              {entry.size !== undefined && (
+                <span className="ml-auto shrink-0" style={{ color: "var(--color-muted)", fontSize: 10 }}>
+                  {entry.size < 1024 ? `${entry.size}B`
+                    : entry.size < 1024 * 1024 ? `${(entry.size / 1024).toFixed(0)}KB`
+                    : `${(entry.size / 1024 / 1024).toFixed(1)}MB`}
+                </span>
+              )}
+            </button>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function DirectoryRow({
+  entry,
+  depth,
+  selectedPath,
+  onSelect,
+}: {
+  entry: FilebrowserEntry;
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (e: FilebrowserEntry) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 px-2 py-1 w-full text-left rounded text-xs transition-colors"
+        style={{ color: "var(--color-foreground)" }}>
+        {open ? <ChevronDown size={11} style={{ flexShrink: 0 }} /> : <ChevronRight size={11} style={{ flexShrink: 0 }} />}
+        {open
+          ? <FolderOpen size={11} style={{ flexShrink: 0, color: "var(--color-accent)" }} />
+          : <Folder size={11} style={{ flexShrink: 0, color: "var(--color-muted)" }} />}
+        <span className="truncate font-medium">{entry.name}</span>
+      </button>
+      {open && (
+        <FileTree path={entry.path} depth={depth + 1} selectedPath={selectedPath} onSelect={onSelect} />
+      )}
+    </div>
+  );
+}
+
+function FileBrowserTab() {
+  const [rootPath, setRootPath] = useState("");
+  const [inputPath, setInputPath] = useState("");
+  const [selectedFile, setSelectedFile] = useState<FilebrowserEntry | null>(null);
+  const [, setLocation] = useLocation();
+
+  const readQ = useQuery({
+    queryKey: ["filebrowser-read", selectedFile?.path],
+    queryFn: () => api.filebrowser.read(selectedFile!.path),
+    enabled: !!selectedFile && !selectedFile.isDirectory,
+    staleTime: 10_000,
+  });
+
+  function loadRoot() {
+    const p = inputPath.trim();
+    if (!p) return;
+    setRootPath(p);
+    setSelectedFile(null);
+  }
+
+  function editWithAI() {
+    if (!selectedFile) return;
+    setLocation(`/chat?cmd=${encodeURIComponent(`/edit ${selectedFile.path}`)}`);
+  }
+
+  return (
+    <div className="rounded-xl overflow-hidden"
+      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", minHeight: 480 }}>
+
+      {/* Path input */}
+      <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <Folder size={14} style={{ color: "var(--color-accent)" }} />
+        <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>File Browser</span>
+        <div className="flex-1 flex items-center gap-2 ml-2">
+          <input
+            value={inputPath}
+            onChange={e => setInputPath(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && loadRoot()}
+            placeholder="Enter directory path…"
+            className="flex-1 px-3 py-1 rounded-lg text-xs outline-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          <button
+            onClick={loadRoot}
+            disabled={!inputPath.trim()}
+            className="px-3 py-1 rounded-lg text-xs font-medium disabled:opacity-40"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>
+            Load
+          </button>
+        </div>
+      </div>
+
+      {/* Split pane */}
+      <div className="flex" style={{ minHeight: 420 }}>
+        {/* Left: tree */}
+        <div className="overflow-y-auto py-2 shrink-0"
+          style={{ width: 220, borderRight: "1px solid var(--color-border)", minHeight: 420 }}>
+          {!rootPath && (
+            <div className="px-3 py-6 text-xs text-center" style={{ color: "var(--color-muted)" }}>
+              Enter a directory path above to browse files.
+            </div>
+          )}
+          {rootPath && (
+            <FileTree path={rootPath} depth={0} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
+          )}
+        </div>
+
+        {/* Right: preview */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {!selectedFile && (
+            <div className="flex flex-col items-center justify-center flex-1 gap-2"
+              style={{ color: "var(--color-muted)" }}>
+              <FileCode size={24} />
+              <span className="text-xs">Select a file to preview</span>
+            </div>
+          )}
+          {selectedFile && (
+            <>
+              {/* File header */}
+              <div className="flex items-center gap-2 px-4 py-2.5 shrink-0"
+                style={{ borderBottom: "1px solid var(--color-border)" }}>
+                <File size={13} style={{ color: "var(--color-muted)" }} />
+                <span className="text-xs font-mono flex-1 truncate" style={{ color: "var(--color-foreground)" }}>
+                  {selectedFile.path}
+                </span>
+                <button
+                  onClick={editWithAI}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium"
+                  style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)", color: "var(--color-accent)", border: "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)" }}>
+                  <Terminal size={11} /> Edit with AI
+                </button>
+              </div>
+              {/* Content */}
+              {readQ.isLoading && (
+                <div className="flex items-center justify-center flex-1 gap-2" style={{ color: "var(--color-muted)" }}>
+                  <Loader2 size={16} className="animate-spin" />
+                  <span className="text-xs">Loading…</span>
+                </div>
+              )}
+              {readQ.isError && (
+                <div className="flex items-center justify-center flex-1 gap-1 text-xs" style={{ color: "var(--color-error)" }}>
+                  <AlertTriangle size={14} /> Failed to read file
+                </div>
+              )}
+              {readQ.data && (
+                <pre className="flex-1 overflow-auto text-xs p-4 whitespace-pre"
+                  style={{ fontFamily: "monospace", color: "var(--color-foreground)", lineHeight: 1.6 }}>
+                  {readQ.data.content}
+                </pre>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function WorkspacePage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"projects" | "intelligence">("projects");
+  const [tab, setTab] = useState<"projects" | "intelligence" | "files">("projects");
   const [showCreate, setShowCreate] = useState(false);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<Record<string, string>>({});
@@ -882,6 +1106,7 @@ export default function WorkspacePage() {
         {([
           { id: "projects", label: "Projects", icon: Folder },
           { id: "intelligence", label: "Intelligence", icon: Brain },
+          { id: "files", label: "Files", icon: FileCode },
         ] as const).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -1001,6 +1226,11 @@ export default function WorkspacePage() {
       {/* ── Intelligence tab ── */}
       {tab === "intelligence" && (
         <IntelligenceTab projects={projects} />
+      )}
+
+      {/* ── Files tab ── */}
+      {tab === "files" && (
+        <FileBrowserTab />
       )}
     </div>
   );

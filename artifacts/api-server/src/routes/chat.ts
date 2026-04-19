@@ -1,7 +1,9 @@
 import { Router } from "express";
-import { mkdir, readFile } from "fs/promises";
-import { existsSync } from "fs";
 import path from "path";
+import { randomUUID } from "crypto";
+import { eq } from "drizzle-orm";
+import { db } from "../db/database.js";
+import { chatSessions, chatMessages } from "../db/schema.js";
 
 import {
   getUniversalGatewayTags,
@@ -12,9 +14,7 @@ import {
   getRunningGatewayModels,
 } from "../lib/model-orchestrator.js";
 import { workspaceContextService } from "../lib/code-context.js";
-import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { thoughtLog } from "../lib/thought-log.js";
-import { toolsRoot } from "../lib/runtime.js";
 import {
   runSupervisorPipeline,
   analyzeMessages,
@@ -23,15 +23,124 @@ import {
 } from "../lib/supervisor-agent.js";
 import type { RoutingHint } from "../lib/model-orchestrator.js";
 
-const router = Router();
+// ── Agent Action types ────────────────────────────────────────────────────────
 
-const HISTORY_DIR = path.join(toolsRoot(), "chat-history");
+export type AgentActionType = "propose_edit" | "propose_command" | "propose_self_heal" | "propose_refactor";
 
-async function ensureHistoryDir(): Promise<void> {
-  if (!existsSync(HISTORY_DIR)) {
-    await mkdir(HISTORY_DIR, { recursive: true });
-  }
+export interface AgentAction {
+  id: string;
+  type: AgentActionType;
+  filePath?: string;
+  newContent?: string;
+  command?: string;
+  cwd?: string;
+  workspacePath?: string;
+  request?: string;
+  maxAttempts?: number;
+  rationale: string;
 }
+
+// ── Dangerous command detection ───────────────────────────────────────────────
+
+const DANGEROUS_PATTERNS = [
+  /\brm\s+-rf\b/i, /\bdel\s+\/[sf]\b/i, /\bformat\b/i, /\bmkfs\b/i,
+  /\bdd\s+if=/i, /\b:!+\b/, /\bshutdown\b/i, /\breboot\b/i,
+  /\bpoweroff\b/i, /\bsudo\s+rm\b/i, /\bcurl\b.*\|\s*bash/i,
+  /\bwget\b.*\|\s*sh/i, /\bchmod\s+777\b/i, /\bdropdb\b/i,
+  /\bdrop\s+database\b/i, /\btruncate\s+table\b/i,
+];
+
+export function isDangerousCommand(command: string): boolean {
+  return DANGEROUS_PATTERNS.some(p => p.test(command));
+}
+
+// ── parseAgentActions ─────────────────────────────────────────────────────────
+
+export function parseAgentActions(text: string, workspacePath?: string): AgentAction[] {
+  const actions: AgentAction[] = [];
+
+  // ── Pattern a: fenced block with file path in info string ─────────────────
+  // ```ts:path/to/file.ts  or  ```typescript:path/to/file
+  const fencedWithPath = /```[a-zA-Z0-9_+-]*:([^\s`]+)\n([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = fencedWithPath.exec(text)) !== null) {
+    const filePath = m[1].trim();
+    const newContent = m[2];
+    const before = text.slice(0, m.index);
+    const rationale = extractRationale(before, 300);
+    actions.push({ id: randomUUID(), type: "propose_edit", filePath, newContent, rationale });
+  }
+
+  // ── Pattern b: HTML comment file marker above a fence ────────────────────
+  // <!-- file: path/to/file.ts -->
+  // ```ts ... ```
+  const htmlMarker = /<!--\s*file:\s*([^\s>]+)\s*-->\s*```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g;
+  while ((m = htmlMarker.exec(text)) !== null) {
+    const filePath = m[1].trim();
+    const newContent = m[2];
+    const before = text.slice(0, m.index);
+    const rationale = extractRationale(before, 300);
+    // Avoid double-counting files already matched by pattern a
+    if (!actions.some(a => a.type === "propose_edit" && a.filePath === filePath && a.newContent === newContent)) {
+      actions.push({ id: randomUUID(), type: "propose_edit", filePath, newContent, rationale });
+    }
+  }
+
+  // ── Pattern c: WRITE FILE / END FILE marker ───────────────────────────────
+  const writeFile = /WRITE FILE:\s*([^\n]+)\n([\s\S]*?)END FILE/g;
+  while ((m = writeFile.exec(text)) !== null) {
+    const filePath = m[1].trim();
+    const newContent = m[2];
+    const before = text.slice(0, m.index);
+    const rationale = extractRationale(before, 300);
+    if (!actions.some(a => a.type === "propose_edit" && a.filePath === filePath)) {
+      actions.push({ id: randomUUID(), type: "propose_edit", filePath, newContent, rationale });
+    }
+  }
+
+  // ── Pattern d: shell fence with exec trigger phrase before it ────────────
+  const execTrigger = /(?:run\s+this|execute|do:)[^`]{0,200}```(?:bash|sh|powershell|ps1|cmd)\n([\s\S]*?)```/gi;
+  while ((m = execTrigger.exec(text)) !== null) {
+    const command = m[1].trim();
+    const before = text.slice(0, m.index);
+    const rationale = extractRationale(before, 200);
+    actions.push({
+      id: randomUUID(), type: "propose_command", command,
+      cwd: workspacePath, rationale,
+    });
+  }
+
+  // ── Pattern e: Self-heal <path> ───────────────────────────────────────────
+  const selfHeal = /Self-heal\s+([\S]+)/gi;
+  while ((m = selfHeal.exec(text)) !== null) {
+    const filePath = m[1].trim();
+    const before = text.slice(0, m.index);
+    const rationale = extractRationale(before, 200);
+    actions.push({ id: randomUUID(), type: "propose_self_heal", filePath, maxAttempts: 3, rationale });
+  }
+
+  // ── Pattern f: Refactor <workspace>: <request> ───────────────────────────
+  const refactor = /Refactor\s+([\S]+):\s*([^\n]+)/gi;
+  while ((m = refactor.exec(text)) !== null) {
+    const wp = m[1].trim();
+    const request = m[2].trim();
+    const before = text.slice(0, m.index);
+    const rationale = extractRationale(before, 200);
+    actions.push({ id: randomUUID(), type: "propose_refactor", workspacePath: wp, request, rationale });
+  }
+
+  return actions;
+}
+
+function extractRationale(text: string, maxChars: number): string {
+  const trimmed = text.trimEnd();
+  const snippet = trimmed.length > maxChars ? trimmed.slice(trimmed.length - maxChars) : trimmed;
+  // Take the last non-empty sentence or line
+  const lines = snippet.split("\n").map(l => l.trim()).filter(Boolean);
+  return lines[lines.length - 1] ?? "Agent proposed this action";
+}
+
+const router = Router();
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -157,24 +266,19 @@ router.post("/chat/send", async (req, res) => {
     const persistedModel = result.model;
 
     if (sessionId) {
-      await ensureHistoryDir();
-      const file = path.join(HISTORY_DIR, `${sessionId}.json`);
-      const existing = existsSync(file)
-        ? JSON.parse(await readFile(file, "utf-8"))
-        : {
-            id: sessionId,
-            model: persistedModel,
-            messages: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-      const session = {
-        ...existing,
-        model: persistedModel,
-        messages: [...messages, assistantMsg],
-        updatedAt: new Date().toISOString(),
-      };
-      await writeManagedJson(file, session);
+      const now = new Date().toISOString();
+      // Ensure the session row exists (create on-the-fly if needed)
+      const exists = db.select({ id: chatSessions.id }).from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
+      if (!exists) {
+        db.insert(chatSessions).values({ id: sessionId, name: "New Chat", workspacePath: null, createdAt: now, updatedAt: now }).run();
+      }
+      // Persist both user message(s) and assistant reply
+      const lastUser = [...messages].reverse().find(m => m.role === "user");
+      if (lastUser) {
+        db.insert(chatMessages).values({ id: randomUUID(), sessionId, role: "user", content: lastUser.content, imagesJson: null, supervisorJson: null, contextJson: null, createdAt: now }).run();
+      }
+      db.insert(chatMessages).values({ id: randomUUID(), sessionId, role: "assistant", content: assistantMsg.content, imagesJson: null, supervisorJson: null, contextJson: null, createdAt: now }).run();
+      db.update(chatSessions).set({ updatedAt: now }).where(eq(chatSessions.id, sessionId)).run();
     }
 
     return res.json({
@@ -207,6 +311,9 @@ router.post("/chat/stream", async (req, res) => {
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const workspacePath = typeof body.workspacePath === "string" ? body.workspacePath : undefined;
   const useCodeContext = typeof body.useCodeContext === "boolean" ? body.useCodeContext : undefined;
+  const images: string[] = Array.isArray(body.images)
+    ? (body.images as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
   const messages: ChatMessage[] = Array.isArray(body.messages)
     ? (body.messages as unknown[]).filter(
         (message): message is ChatMessage =>
@@ -230,7 +337,9 @@ router.post("/chat/stream", async (req, res) => {
     const resolvedModel  = model || supervisorPlan.suggestedModel;
 
     const routingHint: RoutingHint = {
-      supervisorIntent:         supervisorPlan.category === "coding"   ? "code"
+      supervisorIntent:         images.length > 0
+                              ? "vision"
+                              : supervisorPlan.category === "coding"   ? "code"
                               : supervisorPlan.category === "hardware" ? "vision"
                               : "general",
       supervisorSuggestedModel: supervisorPlan.suggestedModel,
@@ -252,6 +361,7 @@ router.post("/chat/stream", async (req, res) => {
         supervisorCategory: supervisorPlan.category,
         supervisorConfidence: supervisorPlan.confidence,
         routingIntent: routingHint.supervisorIntent,
+        hasImages: images.length > 0,
       },
     });
 
@@ -270,10 +380,24 @@ router.post("/chat/stream", async (req, res) => {
       messages:       upstreamMessages,
       requestedModel: resolvedModel || undefined,
       routingHint,
+      images:         images.length > 0 ? images : undefined,
       initialPayloads: [
         supervisorPayload,
         ...(codeContext ? [{ context: contextMetadata(codeContext) }] : []),
       ],
+      onStreamComplete: async (fullText, writeSse) => {
+        const actions = parseAgentActions(fullText, workspacePath);
+        for (const action of actions) {
+          writeSse({ agentAction: action });
+          thoughtLog.publish({
+            level:    "warning",
+            category: "system",
+            title:    "Agent Action Proposed",
+            message:  `${action.type} — ${action.filePath ?? action.command ?? action.workspacePath ?? ""}`,
+            metadata: { ...action },
+          });
+        }
+      },
     });
   } catch (error) {
     if (res.writableEnded || res.destroyed) {
@@ -413,8 +537,158 @@ router.post("/chat/command", async (req, res) => {
     return res.json({
       success: true,
       action: "help",
-      message: `**Chat Commands:**\n\u2022 \`/install <model>\` \u2014 queue a model pull\n\u2022 \`/stop <model>\` \u2014 unload a model from VRAM\n\u2022 \`/models\` \u2014 list installed models\n\u2022 \`/status\` \u2014 show system status\n\u2022 \`/index\` \u2014 refresh the code context index\n\u2022 \`/help\` \u2014 show this message`,
+      message: [
+        "**Chat Commands:**",
+        "• `/install <model>` — queue a model pull",
+        "• `/stop <model>` — unload a model from VRAM",
+        "• `/models` — list installed models",
+        "• `/status` — show system status",
+        "• `/index` — refresh the code context index",
+        "• `/hardware` — show GPU / CPU / RAM / OS info",
+        "• `/models-catalog` — top 10 recommended models",
+        "• `/edit <path>` — propose an AI-guided file edit",
+        "• `/run <command>` — propose a shell command",
+        "• `/refactor <request>` — propose a workspace refactor",
+        "• `/rollback <path>` — revert a file to its last backup",
+        "• `/pin <text>` — personal memory (arrives Phase 6)",
+        "• `/web <query>` — web search (arrives Phase 6)",
+        "• `/help` — show this message",
+      ].join("\n"),
     });
+  }
+
+  // ── /hardware ────────────────────────────────────────────────────────────
+
+  if (cmd === "/hardware") {
+    const { probeHardware } = await import("../lib/hardware-probe.js");
+    const hw = await probeHardware();
+    const fmtBytes = (b: number) => {
+      const gb = b / 1024 ** 3;
+      return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(b / 1024 ** 2).toFixed(0)} MB`;
+    };
+    const lines = [
+      `**GPU:** ${hw.gpu.name} (${fmtBytes(hw.gpu.freeVramBytes)} free / ${fmtBytes(hw.gpu.totalVramBytes)}) [${hw.gpu.probedVia}]`,
+      hw.gpu.driver ? `  Driver: ${hw.gpu.driver}` : null,
+      `**CPU:** ${hw.cpu.model} — ${hw.cpu.physicalCores}C / ${hw.cpu.logicalCores}T @ ${(hw.cpu.speedMhz / 1000).toFixed(1)} GHz`,
+      `**RAM:** ${fmtBytes(hw.ram.freeBytes)} free / ${fmtBytes(hw.ram.totalBytes)}`,
+      `**Disk:** ${fmtBytes(hw.disk.installDriveFreeBytes)} free / ${fmtBytes(hw.disk.installDriveTotalBytes)}`,
+      `**OS:** ${hw.os.platform} ${hw.os.release}${hw.os.build ? ` (${hw.os.build})` : ""} ${hw.os.arch}`,
+      `**Ollama:** ${hw.ollama.reachable ? "✓ reachable" : "✗ unreachable"} @ ${hw.ollama.url}`,
+    ].filter(Boolean).join("\n");
+    return res.json({ success: true, action: "hardware", message: lines });
+  }
+
+  // ── /models-catalog ──────────────────────────────────────────────────────
+
+  if (cmd === "/models-catalog") {
+    try {
+      const { discoverVerifiedModels } = await import("../lib/model-discovery.js");
+      const cards = await discoverVerifiedModels();
+      const top10 = cards.slice(0, 10);
+      if (top10.length === 0) {
+        return res.json({ success: true, action: "models-catalog", message: "No model catalog available." });
+      }
+      const lines = top10.map((c, i) => {
+        return `${i + 1}. **${c.modelName}:${c.tag}** [${c.category}]${c.whyRecommended ? ` — ${c.whyRecommended.slice(0, 80)}` : ""}`;
+      }).join("\n");
+      return res.json({ success: true, action: "models-catalog", message: `**Top 10 Recommended Models:**\n${lines}` });
+    } catch {
+      return res.json({ success: false, message: "Model catalog unavailable — Ollama may be offline." });
+    }
+  }
+
+  // ── /edit <path> ─────────────────────────────────────────────────────────
+
+  const editMatch = command.match(/^\/edit\s+(\S+)/i);
+  if (editMatch) {
+    const filePath = editMatch[1].trim();
+    const action: AgentAction = {
+      id:        randomUUID(),
+      type:      "propose_edit",
+      filePath,
+      newContent: "",
+      rationale:  `User requested an edit of ${filePath} via /edit command`,
+    };
+    return res.json({
+      success: true,
+      action: "edit",
+      message: `Edit proposed for \`${filePath}\`. Paste the new file content in the Agent Action panel, then click Approve.`,
+      agentAction: action,
+    });
+  }
+
+  // ── /run <command> ───────────────────────────────────────────────────────
+
+  const runMatch = command.match(/^\/run\s+(.+)/i);
+  if (runMatch) {
+    const shellCmd = runMatch[1].trim();
+    const action: AgentAction = {
+      id:       randomUUID(),
+      type:     "propose_command",
+      command:  shellCmd,
+      cwd:      typeof body.workspacePath === "string" ? body.workspacePath : undefined,
+      rationale: `User requested command via /run`,
+    };
+    return res.json({
+      success: true,
+      action: "run",
+      message: `Command proposed: \`${shellCmd}\`. Review in the Agent Action panel and click Approve to execute.`,
+      agentAction: action,
+    });
+  }
+
+  // ── /refactor <request> ──────────────────────────────────────────────────
+
+  const refactorMatch = command.match(/^\/refactor\s+(.+)/i);
+  if (refactorMatch) {
+    const request = refactorMatch[1].trim();
+    const wsPath = typeof body.workspacePath === "string" ? body.workspacePath : undefined;
+    if (!wsPath) {
+      return res.json({ success: false, message: "No workspace selected. Pick a workspace context first." });
+    }
+    const action: AgentAction = {
+      id:            randomUUID(),
+      type:          "propose_refactor",
+      workspacePath: wsPath,
+      request,
+      rationale:     `User requested refactor via /refactor`,
+    };
+    return res.json({
+      success: true,
+      action: "refactor",
+      message: `Refactor proposed for workspace. Review in the Agent Action panel and click Approve to plan.`,
+      agentAction: action,
+    });
+  }
+
+  // ── /rollback <path> ─────────────────────────────────────────────────────
+
+  const rollbackMatch = command.match(/^\/rollback\s+(\S+)/i);
+  if (rollbackMatch) {
+    const filePath = rollbackMatch[1].trim();
+    try {
+      const { rollbackFile } = await import("../lib/snapshot-manager.js");
+      const result = await rollbackFile(filePath);
+      return res.json({
+        success: true,
+        action: "rollback",
+        message: `Rolled back \`${filePath}\` to snapshot from ${result.createdAt ? new Date(result.createdAt).toLocaleString() : "backup"}.`,
+      });
+    } catch (err) {
+      return res.json({
+        success: false,
+        message: `Rollback failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // ── /pin and /web (phase 6 placeholders — informative message) ────────────
+
+  if (cmd.startsWith("/pin ")) {
+    return res.json({ success: true, action: "pin", message: "Personal memory arrives in Phase 6." });
+  }
+  if (cmd.startsWith("/web ")) {
+    return res.json({ success: true, action: "web", message: "Web search arrives in Phase 6." });
   }
 
   return res.json({

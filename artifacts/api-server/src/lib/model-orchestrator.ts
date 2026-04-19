@@ -30,6 +30,11 @@ import {
   getDistributedNodeConfig, getStreamingBufferProfile,
   LatencyOptimizedTokenBuffer,
 } from "./network-proxy.js";
+import {
+  inferAffinityFromName,
+  INTENT_PREFERENCES,
+  type RouteIntent,
+} from "../config/models.config.js";
 
 const execAsync = promisify(exec);
 
@@ -153,6 +158,11 @@ interface StreamOptions {
   initialPayloads?: unknown[];
   /** Supervisor routing hint — skips independent intent inference. */
   routingHint?: RoutingHint;
+  /** Called with the full assistant reply text just before [DONE] is written.
+   *  Use to emit additional SSE events (e.g. agentAction). */
+  onStreamComplete?: (fullText: string, writeSse: (payload: unknown) => void) => Promise<void>;
+  /** Array of base64-encoded images to include in the upstream chat body. */
+  images?: string[];
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -214,10 +224,7 @@ function classifyRuntimeSize(bytes: number): GatewayModel["runtimeClass"] {
 // ── Intent inference ──────────────────────────────────────────────────────────
 
 function inferIntentFromModelName(modelName: string): GatewayModel["routeAffinity"] {
-  const n = modelName.toLowerCase();
-  if (n.includes("llava") || n.includes("-vl") || n.includes("vision") || n.includes("minicpm-v") || n.includes("moondream")) return "vision";
-  if (n.includes("coder") || n.includes("codellama") || n.includes("codegemma") || n.includes("starcoder") || n.includes("deepseek")) return "code";
-  return "general";
+  return inferAffinityFromName(modelName);
 }
 
 export function inferIntentFromMessages(messages: ChatMessage[]): RouteDecision["intent"] {
@@ -419,9 +426,7 @@ function rolePriorityForIntent(intent: RouteDecision["intent"]): string[] {
 }
 
 function canonicalPreferencesForIntent(intent: RouteDecision["intent"]): string[] {
-  if (intent === "code")   return ["deepseek-coder","deepseek-r1","qwen3-coder","qwen2.5-coder","codellama"];
-  if (intent === "vision") return ["llava","llava-phi3","qwen2.5-vl","minicpm-v","moondream"];
-  return ["llama3.1","llama3.2","llama3","qwen3","mistral","gemma3"];
+  return INTENT_PREFERENCES[intent as RouteIntent] ?? INTENT_PREFERENCES.general;
 }
 
 function matchesModel(candidate: GatewayModel, query: string): boolean {
@@ -577,18 +582,37 @@ export async function streamGatewayChatToSse(response: Response, options: Stream
     if (settled) return; clientDisconnected = true; settled = true;
     upstreamController.abort(); void reader?.cancel().catch(() => undefined); cleanup();
   };
-  const finishStream = () => {
+  let collectedText = "";
+  const finishStream = async () => {
     if (settled) return; settled = true; cleanup();
-    if (!response.destroyed && !response.writableEnded) { tokenBuffer.close(); writeSseDone(response); response.end(); }
+    if (!response.destroyed && !response.writableEnded) {
+      tokenBuffer.close();
+      if (options.onStreamComplete) {
+        try { await options.onStreamComplete(collectedText, (p) => writeSseData(response, p)); } catch { /* ignore */ }
+      }
+      writeSseDone(response);
+      response.end();
+    }
   };
   response.on("close", abortFromClient); response.on("error", abortFromClient);
   for (const payload of options.initialPayloads ?? []) writeSseData(response, payload);
   writeSseData(response, { route, model: route.selectedModel, switched: route.switched });
   const [baseUrl, proxyHeaders] = await Promise.all([getActiveGatewayBaseUrl(), buildDistributedProxyHeaders()]);
+
+  // Attach images to last user message when provided
+  const upstreamMessages = options.images && options.images.length > 0
+    ? options.messages.map((m, i) => {
+        if (i === options.messages.length - 1 && m.role === "user") {
+          return { ...m, images: options.images };
+        }
+        return m;
+      })
+    : options.messages;
+
   const upstreamResponse = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: mergeHeaders(proxyHeaders, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ model: route.selectedModel, messages: options.messages, stream: true }),
+    body: JSON.stringify({ model: route.selectedModel, messages: upstreamMessages, stream: true }),
     signal: upstreamController.signal,
   });
   if (!upstreamResponse.ok || !upstreamResponse.body) {
@@ -601,10 +625,10 @@ export async function streamGatewayChatToSse(response: Response, options: Stream
       if (clientDisconnected) return;
       const parsed = JSON.parse(line) as { error?: string; message?: { content?: string }; done?: boolean };
       if (parsed.error) { writeSseData(response, { error: parsed.error, model: route.selectedModel, route }); throw new Error(parsed.error); }
-      if (parsed.message?.content) tokenBuffer.enqueue(parsed.message.content);
+      if (parsed.message?.content) { collectedText += parsed.message.content; tokenBuffer.enqueue(parsed.message.content); }
       if (parsed.done && !emittedDone) { emittedDone = true; tokenBuffer.flush(); writeSseData(response, { done: true, model: route.selectedModel, route }); }
     });
-  } finally { if (!clientDisconnected) finishStream(); else { tokenBuffer.close(); cleanup(); } }
+  } finally { if (!clientDisconnected) await finishStream(); else { tokenBuffer.close(); cleanup(); } }
 }
 
 export async function sendGatewayChat(
@@ -644,11 +668,48 @@ export function queueUniversalModelPull(modelName: string) {
   const normalized = modelName.trim();
   return taskQueue.enqueue(`Pull ${normalized}`, "model-pull", async ({ updateProgress, publishThought, job }) => {
     publishThought("Gateway Pull Started", `Starting Ollama HTTP pull for ${normalized}`, { modelName: normalized });
-    await pullModelFromOllama(normalized, updateProgress);
-    updateProgress(100, "Model pull completed", { modelName: normalized });
-    await saveGatewayState(c => ({ ...c, lastPull: { modelName: normalized, jobId: job.id, updatedAt: new Date().toISOString() } }));
-    thoughtLog.publish({ category: "system", title: "Gateway Pull Complete", message: `${normalized} finished downloading via Ollama HTTP pull`, metadata: { modelName: normalized, jobId: job.id } });
-    return { modelName: normalized };
+
+    // Record pull start in model_pull_history
+    const historyId  = job.id;
+    const startedAt  = new Date().toISOString();
+    try {
+      const { sqlite } = await import("../db/database.js");
+      sqlite.prepare(`
+        INSERT OR IGNORE INTO model_pull_history
+          (id, model_name, started_at, status)
+        VALUES (?, ?, ?, 'pending')
+      `).run(historyId, normalized, startedAt);
+    } catch { /* non-fatal */ }
+
+    try {
+      await pullModelFromOllama(normalized, updateProgress);
+      updateProgress(100, "Model pull completed", { modelName: normalized });
+      await saveGatewayState(c => ({ ...c, lastPull: { modelName: normalized, jobId: job.id, updatedAt: new Date().toISOString() } }));
+      thoughtLog.publish({ category: "system", title: "Gateway Pull Complete", message: `${normalized} finished downloading via Ollama HTTP pull`, metadata: { modelName: normalized, jobId: job.id } });
+
+      // Mark success
+      try {
+        const { sqlite } = await import("../db/database.js");
+        sqlite.prepare(`
+          UPDATE model_pull_history
+          SET status = 'success', completed_at = ?
+          WHERE id = ?
+        `).run(new Date().toISOString(), historyId);
+      } catch { /* non-fatal */ }
+
+      return { modelName: normalized };
+    } catch (err) {
+      // Mark failure
+      try {
+        const { sqlite } = await import("../db/database.js");
+        sqlite.prepare(`
+          UPDATE model_pull_history
+          SET status = 'failed', completed_at = ?, error = ?
+          WHERE id = ?
+        `).run(new Date().toISOString(), err instanceof Error ? err.message : String(err), historyId);
+      } catch { /* non-fatal */ }
+      throw err;
+    }
   }, { capability: "sysadmin", metadata: { modelName: normalized } });
 }
 

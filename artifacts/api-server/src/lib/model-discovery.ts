@@ -1,12 +1,7 @@
 import { fetchJson, fetchText } from "./runtime.js";
+import { DISCOVERY_SEEDS, type ModelSeed } from "../config/models.config.js";
 
-export interface ModelSeed {
-  modelName: string;
-  tags: string[];
-  category: "coding" | "general" | "reasoning" | "vision" | "embedding" | "uncensored";
-  aliases?: string[];
-  keywords?: string[];
-}
+export type { ModelSeed };
 
 export interface DiscoveredModelCard {
   spec: string;
@@ -45,24 +40,8 @@ const SOURCE_URLS = [
   { id: "hf-abliterated",      label: "HuggingFace Abliterated Search", type: "json", url: "https://huggingface.co/api/models?search=abliterated&limit=12&sort=downloads&direction=-1" },
 ] as const;
 
-const SEED_MODELS: ModelSeed[] = [
-  { modelName: "qwen3-coder",        tags: ["30b","8b"],            category: "coding",     aliases: ["qwen coder"] },
-  { modelName: "qwen2.5-coder",      tags: ["14b","7b","1.5b"],     category: "coding" },
-  { modelName: "deepseek-coder-v2",  tags: ["16b"],                 category: "coding",     aliases: ["deepseek coder"] },
-  { modelName: "qwen3",              tags: ["32b","14b","8b"],       category: "general" },
-  { modelName: "gemma3",             tags: ["27b","12b","4b"],       category: "general" },
-  { modelName: "deepseek-r1",        tags: ["14b","8b","7b"],        category: "reasoning" },
-  { modelName: "qwq",                tags: ["32b"],                  category: "reasoning" },
-  { modelName: "dolphin3",           tags: ["latest"],               category: "uncensored", keywords: ["abliterated","uncensored"] },
-  { modelName: "neural-daredevil",   tags: ["8b"],                   category: "uncensored", keywords: ["abliterated","uncensored"] },
-  { modelName: "glm4",               tags: ["9b"],                   category: "uncensored", keywords: ["abliterated","storytelling"] },
-  { modelName: "qwen2.5-vl",         tags: ["7b"],                   category: "vision" },
-  { modelName: "minicpm-v",          tags: ["latest"],               category: "vision" },
-  { modelName: "nomic-embed-text",   tags: ["latest"],               category: "embedding" },
-  { modelName: "mxbai-embed-large",  tags: ["latest"],               category: "embedding" },
-  { modelName: "llama3.3",           tags: ["70b"],                  category: "general",    aliases: ["llama 3.3"] },
-  { modelName: "mistral-small",      tags: ["24b"],                  category: "general",    aliases: ["mistral small"] },
-];
+// SEED_MODELS is imported from config/models.config.ts as DISCOVERY_SEEDS (Rule 4).
+const SEED_MODELS = DISCOVERY_SEEDS;
 
 function uniq<T>(values: T[]): T[] {
   return [...new Set(values)];

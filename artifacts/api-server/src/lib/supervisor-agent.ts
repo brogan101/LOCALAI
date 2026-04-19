@@ -25,6 +25,12 @@
 import { thoughtLog } from "./thought-log.js";
 import { stateOrchestrator } from "./state-orchestrator.js";
 import type { TaskCategory } from "./secure-config.js";
+import {
+  INTENT_PATTERNS,
+  VISION_PATTERN,
+  SUPERVISOR_PREFERENCES,
+  DEFAULT_FALLBACK_MODEL,
+} from "../config/models.config.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -47,34 +53,10 @@ interface ChatMessage {
 }
 
 // ── Pattern-matching classification ──────────────────────────────────────────
+// Patterns and preferences are imported from config/models.config.ts (Rule 4).
 
-const CATEGORY_PATTERNS: Record<TaskCategory, RegExp[]> = {
-  coding: [
-    /```[\s\S]*```/,
-    /`[^`]+`/,
-    /\b(code|debug|fix|refactor|typescript|javascript|python|function|class|stack ?trace|compile|build ?error|sql|regex|api|endpoint|component|hook|module|import|export|unit ?test|jest|vitest|eslint|prettier|git|commit|branch|merge|pull ?request|dockerfile|ci\/cd)\b/i,
-  ],
-  sysadmin: [
-    /\b(server|deploy|nginx|docker|kubernetes|k8s|service|daemon|process|port|firewall|ssl|certificate|cron|systemd|pm2|bash|shell|script|install|upgrade|dependency|npm|pip|brew|apt|yum|winget|configure|environment|env|variable|restart|reload|permission|chmod|sudo|admin|ssh|vpn|network|dns)\b/i,
-  ],
-  hardware: [
-    /\b(cad|3d|openscad|blender|fusion\s*360|solidworks|stl|g[-_]?code|printer|filament|pla|abs|petg|nozzle|slicer|freecad|mesh|render|brim|support|infill|layer|circuit|pcb|arduino|raspberry|gpio|sensor|actuator|motor|servo|cnc|milling|extrude)\b/i,
-  ],
-  general: [
-    /\b(explain|what|how|why|help|write|create|summarize|translate|analyze|review|compare|list|describe|tell me|give me|show me)\b/i,
-  ],
-};
-
-const VISION_PATTERN =
-  /\b(image|photo|picture|screenshot|diagram|chart|vision|ocr|look at|analyze this image|what do you see)\b/i;
-
-// Model preference lists per category (first match in installed models wins).
-const MODEL_PREFERENCES: Record<TaskCategory, string[]> = {
-  coding:   ["deepseek-coder-v2", "deepseek-r1", "qwen3-coder", "qwen2.5-coder", "codellama", "starcoder2"],
-  sysadmin: ["deepseek-r1", "qwen3", "llama3.1", "mistral", "phi4"],
-  hardware: ["llava", "qwen2.5-vl", "minicpm-v", "moondream", "deepseek-r1", "qwen3"],
-  general:  ["llama3.1", "llama3.2", "qwen3", "mistral", "gemma3", "phi4"],
-};
+const CATEGORY_PATTERNS = INTENT_PATTERNS;
+const MODEL_PREFERENCES  = SUPERVISOR_PREFERENCES;
 
 const TOOLSET_MAP: Record<TaskCategory, ToolsetType> = {
   coding:   "execution",
@@ -187,7 +169,7 @@ export function analyzeMessages(
 
   const { category, confidence } = classifyCategory(messages);
   const steps = generateExecutionPlan(category, goal);
-  const suggestedModel = MODEL_PREFERENCES[category][0] ?? "llama3.1";
+  const suggestedModel = MODEL_PREFERENCES[category][0] ?? DEFAULT_FALLBACK_MODEL;
   const toolset = TOOLSET_MAP[category];
 
   return {
@@ -305,7 +287,7 @@ export async function runSupervisorPipeline(
   });
 
   // ── Step 4: model selection ───────────────────────────────────────────────
-  const suggestedModel = manualOverrideModel ?? (MODEL_PREFERENCES[category][0] ?? "llama3.1");
+  const suggestedModel = manualOverrideModel ?? (MODEL_PREFERENCES[category][0] ?? DEFAULT_FALLBACK_MODEL);
   const toolset        = TOOLSET_MAP[category];
   const agentName      = agentDisplayName(category);
 

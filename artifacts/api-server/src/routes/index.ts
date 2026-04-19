@@ -20,6 +20,7 @@ import kernel from "./kernel.js";
 import observability from "./observability.js";
 import tasks from "./tasks.js";
 import rollback from "./rollback.js";
+import sessions from "./sessions.js";
 
 const router = Router();
 
@@ -33,6 +34,7 @@ router.use(continueRoute);
 router.use(studios);
 router.use(remote);
 router.use(chat);
+router.use(sessions);
 router.use(filebrowser);
 router.use(context);
 router.use(intelligence);

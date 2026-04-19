@@ -9,6 +9,10 @@ import { loadSettings, saveSettings } from "../lib/secure-config.js";
 const router = Router();
 const USAGE_DIR = path.join(toolsRoot(), "usage");
 
+// Claude Sonnet 4 API pricing used for the "cost-saved" counter
+const CLAUDE_COST_PER_INPUT_TOKEN  = 3  / 1_000_000; // $3 / 1M input tokens
+const CLAUDE_COST_PER_OUTPUT_TOKEN = 15 / 1_000_000; // $15 / 1M output tokens
+
 const DEFAULT_SETTINGS = {
   tokenWarningThreshold: 50000,
   dailyTokenLimit: 200000,
@@ -56,41 +60,82 @@ async function loadAppSettings(): Promise<any> {
   return DEFAULT_SETTINGS;
 }
 
+// ── Write usage_metrics to SQLite (fire-and-forget) ───────────────────────────
+
+async function upsertUsageMetric(
+  date: string,
+  tokensIn: number,
+  tokensOut: number,
+): Promise<void> {
+  try {
+    const { sqlite } = await import("../db/database.js");
+    const costIn  = tokensIn  * CLAUDE_COST_PER_INPUT_TOKEN;
+    const costOut = tokensOut * CLAUDE_COST_PER_OUTPUT_TOKEN;
+    sqlite.prepare(`
+      INSERT INTO usage_metrics (date, tokens_in, tokens_out, cost_estimate_usd)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(date) DO UPDATE SET
+        tokens_in         = tokens_in         + excluded.tokens_in,
+        tokens_out        = tokens_out        + excluded.tokens_out,
+        cost_estimate_usd = cost_estimate_usd + excluded.cost_estimate_usd
+    `).run(date, tokensIn, tokensOut, costIn + costOut);
+  } catch { /* non-fatal */ }
+}
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+
 router.post("/usage/record", async (req, res) => {
-  const { model, inputText, outputText, inputTokens: rawIn, outputTokens: rawOut, durationMs = 0, sessionId } = req.body;
+  const {
+    model,
+    inputText, outputText,
+    inputTokens: rawIn, outputTokens: rawOut,
+    durationMs = 0, sessionId,
+  } = req.body;
   if (!model) return res.status(400).json({ success: false, message: "model required" });
-  const inputTokens = rawIn ?? (inputText ? estimateTokens(inputText) : 0);
+
+  const inputTokens  = rawIn  ?? (inputText  ? estimateTokens(inputText)  : 0);
   const outputTokens = rawOut ?? (outputText ? estimateTokens(outputText) : 0);
-  const totalTokens = inputTokens + outputTokens;
+  const totalTokens  = inputTokens + outputTokens;
   const today = todayKey();
-  const day = await loadDay(today);
-  day.totalTokens += totalTokens;
+  const day   = await loadDay(today);
+
+  day.totalTokens   += totalTokens;
   day.totalRequests += 1;
+
   if (!day.byModel[model]) {
     day.byModel[model] = { tokens: 0, requests: 0, avgMs: 0, inputTokens: 0, outputTokens: 0 };
   }
   const m = day.byModel[model];
-  m.tokens += totalTokens;
-  m.inputTokens = (m.inputTokens || 0) + inputTokens;
-  m.outputTokens = (m.outputTokens || 0) + outputTokens;
-  m.requests += 1;
-  m.avgMs = Math.round((m.avgMs * (m.requests - 1) + durationMs) / m.requests);
+  m.tokens        += totalTokens;
+  m.inputTokens    = (m.inputTokens  || 0) + inputTokens;
+  m.outputTokens   = (m.outputTokens || 0) + outputTokens;
+  m.requests      += 1;
+  m.avgMs          = Math.round((m.avgMs * (m.requests - 1) + durationMs) / m.requests);
+
   if (sessionId) {
     const existing = day.sessions.find((s: any) => s.sessionId === sessionId);
     if (existing) {
-      existing.tokens += totalTokens;
-      existing.inputTokens = (existing.inputTokens || 0) + inputTokens;
-      existing.outputTokens = (existing.outputTokens || 0) + outputTokens;
-      existing.messageCount = (existing.messageCount || 0) + 1;
-      existing.endedAt = new Date().toISOString();
+      existing.tokens       += totalTokens;
+      existing.inputTokens   = (existing.inputTokens  || 0) + inputTokens;
+      existing.outputTokens  = (existing.outputTokens || 0) + outputTokens;
+      existing.messageCount  = (existing.messageCount || 0) + 1;
+      existing.endedAt       = new Date().toISOString();
     } else {
-      day.sessions.push({ sessionId, model, tokens: totalTokens, inputTokens, outputTokens, messageCount: 1, startedAt: new Date().toISOString() });
+      day.sessions.push({
+        sessionId, model, tokens: totalTokens, inputTokens, outputTokens,
+        messageCount: 1, startedAt: new Date().toISOString(),
+      });
     }
   }
+
   await saveDay(day);
+
+  // Write-through to SQLite usage_metrics
+  void upsertUsageMetric(today, inputTokens, outputTokens);
+
   const settings = await loadAppSettings();
   const limitHit = settings.dailyTokenLimit > 0 && day.totalTokens >= settings.dailyTokenLimit;
-  const warnHit = settings.tokenWarningThreshold > 0 && day.totalTokens >= settings.tokenWarningThreshold;
+  const warnHit  = settings.tokenWarningThreshold > 0 && day.totalTokens >= settings.tokenWarningThreshold;
   return res.json({
     success: true,
     inputTokens,
@@ -105,7 +150,7 @@ router.post("/usage/record", async (req, res) => {
 
 router.get("/usage/today", async (_req, res) => {
   const settings = await loadAppSettings();
-  const day = await loadDay(todayKey());
+  const day      = await loadDay(todayKey());
   const topModels = Object.entries(day.byModel)
     .sort((a: any, b: any) => b[1].tokens - a[1].tokens)
     .slice(0, 5)
@@ -114,26 +159,30 @@ router.get("/usage/today", async (_req, res) => {
     ...day,
     topModels,
     limitHit: settings.dailyTokenLimit > 0 && day.totalTokens >= settings.dailyTokenLimit,
-    warnHit: settings.tokenWarningThreshold > 0 && day.totalTokens >= settings.tokenWarningThreshold,
-    dailyLimit: settings.dailyTokenLimit,
-    warningThreshold: settings.tokenWarningThreshold,
-    remaining: Math.max(0, settings.dailyTokenLimit - day.totalTokens),
-    utilizationPct: settings.dailyTokenLimit > 0 ? Math.min(100, Math.round((day.totalTokens / settings.dailyTokenLimit) * 100)) : 0,
+    warnHit:  settings.tokenWarningThreshold > 0 && day.totalTokens >= settings.tokenWarningThreshold,
+    dailyLimit:         settings.dailyTokenLimit,
+    warningThreshold:   settings.tokenWarningThreshold,
+    remaining:          Math.max(0, settings.dailyTokenLimit - day.totalTokens),
+    utilizationPct:     settings.dailyTokenLimit > 0
+      ? Math.min(100, Math.round((day.totalTokens / settings.dailyTokenLimit) * 100))
+      : 0,
   });
 });
 
 router.get("/usage/history", async (req, res) => {
-  const days = Math.min(Number(req.query.days) || 7, 30);
+  const days    = Math.min(Number(req.query.days) || 7, 30);
   const history: any[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     history.push(await loadDay(d.toISOString().slice(0, 10)));
   }
-  const totalTokens = history.reduce((s, d) => s + d.totalTokens, 0);
+  const totalTokens   = history.reduce((s, d) => s + d.totalTokens, 0);
   const totalRequests = history.reduce((s, d) => s + d.totalRequests, 0);
-  const nonZero = history.filter((d) => d.totalTokens > 0);
-  const peakDay = nonZero.length ? nonZero.reduce((a, b) => (a.totalTokens > b.totalTokens ? a : b)) : null;
+  const nonZero       = history.filter((d) => d.totalTokens > 0);
+  const peakDay       = nonZero.length
+    ? nonZero.reduce((a, b) => (a.totalTokens > b.totalTokens ? a : b))
+    : null;
   const allModels: Record<string, number> = {};
   for (const day of history) {
     for (const [name, stats] of Object.entries(day.byModel)) {
@@ -157,10 +206,79 @@ router.get("/usage/estimate", async (req, res) => {
   return res.json({ estimatedTokens: estimateTokens(text), chars: text.length });
 });
 
+// ── GET /usage/lifetime — lifetime cost-saved counter (Step 5.6) ──────────────
+
+router.get("/usage/lifetime", async (_req, res) => {
+  try {
+    const { sqlite } = await import("../db/database.js");
+
+    // Sum all rows from usage_metrics
+    const row = sqlite.prepare(`
+      SELECT
+        SUM(tokens_in)         AS totalIn,
+        SUM(tokens_out)        AS totalOut,
+        SUM(cost_estimate_usd) AS totalCost,
+        MIN(date)              AS firstDate
+      FROM usage_metrics
+    `).get() as {
+      totalIn: number | null;
+      totalOut: number | null;
+      totalCost: number | null;
+      firstDate: string | null;
+    } | undefined;
+
+    const totalIn   = row?.totalIn   ?? 0;
+    const totalOut  = row?.totalOut  ?? 0;
+    const totalCost = row?.totalCost ?? 0;
+    const firstDate = row?.firstDate ?? null;
+
+    // Fall back to scanning JSON usage files if DB has no rows yet
+    let fallbackIn = 0, fallbackOut = 0;
+    if (totalIn === 0 && existsSync(USAGE_DIR)) {
+      try {
+        const files = await readdir(USAGE_DIR);
+        for (const f of files) {
+          if (!f.endsWith(".json")) continue;
+          try {
+            const day = JSON.parse(await readFile(path.join(USAGE_DIR, f), "utf-8")) as any;
+            for (const stats of Object.values(day.byModel ?? {})) {
+              fallbackIn  += (stats as any).inputTokens  ?? 0;
+              fallbackOut += (stats as any).outputTokens ?? 0;
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    const effectiveIn   = totalIn   || fallbackIn;
+    const effectiveOut  = totalOut  || fallbackOut;
+    const effectiveCost = totalCost || (
+      effectiveIn  * CLAUDE_COST_PER_INPUT_TOKEN +
+      effectiveOut * CLAUDE_COST_PER_OUTPUT_TOKEN
+    );
+
+    return res.json({
+      success:            true,
+      totalTokensIn:      effectiveIn,
+      totalTokensOut:     effectiveOut,
+      totalTokens:        effectiveIn + effectiveOut,
+      costEstimateUsd:    parseFloat(effectiveCost.toFixed(4)),
+      firstDate,
+      pricing: {
+        inputPer1M:  3,
+        outputPer1M: 15,
+        model:       "Claude Sonnet 4",
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: String(err) });
+  }
+});
+
 router.delete("/usage/purge", async (req, res) => {
-  const settings = await loadAppSettings();
+  const settings      = await loadAppSettings();
   const olderThanDays = Number(req.query.olderThanDays) || settings.chatHistoryDays || 30;
-  const cutoff = new Date();
+  const cutoff        = new Date();
   cutoff.setDate(cutoff.getDate() - olderThanDays);
   if (!existsSync(USAGE_DIR)) return res.json({ success: true, removed: 0 });
   const files = await readdir(USAGE_DIR);
@@ -184,7 +302,7 @@ router.get("/settings", async (_req, res) => {
 router.put("/settings", async (req, res) => {
   const current = await loadAppSettings();
   const updated = { ...current, ...req.body };
-  const saved = await saveSettings(updated);
+  const saved   = await saveSettings(updated);
   return res.json({ success: true, settings: saved });
 });
 

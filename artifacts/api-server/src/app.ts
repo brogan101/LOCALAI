@@ -3,12 +3,40 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import type { Options as PinoHttpOptions } from "pino-http";
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+import path from "path";
+import os from "os";
 import { logger } from "./lib/logger.js";
 import { thoughtLog } from "./lib/thought-log.js";
 import { stateOrchestrator } from "./lib/state-orchestrator.js";
 import { distributedNodeAuthMiddleware, startDistributedNodeHeartbeat } from "./lib/network-proxy.js";
 import { getUniversalGatewayTags } from "./lib/model-orchestrator.js";
+import { trackWindowForIdleMinimize } from "./lib/windows-system.js";
 import routes from "./routes/index.js";
+import { initDatabase } from "./db/migrate.js";
+import { taskQueue } from "./lib/task-queue.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
+// ── Windows tray sidecar ──────────────────────────────────────────────────────
+
+function spawnTraySidecar(): void {
+  if (os.platform() !== "win32") return;
+  const script = path.resolve(__dirname, "../../../scripts/windows/LocalAI.Tray.ps1");
+  const proc = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script],
+    { detached: true, stdio: "ignore" },
+  );
+  proc.unref();
+  thoughtLog.publish({
+    category: "kernel",
+    title:    "Tray: Sidecar Spawned",
+    message:  `Windows tray icon launched (pid ${proc.pid ?? "?"})`,
+  });
+}
 
 const app = express();
 
@@ -47,7 +75,29 @@ app.use("/api", routes);
 //   3. Run the boot-time Ollama catalog sync — populates the model cache and
 //      updates sovereign state with lastCatalogSync + catalogModelCount.
 
+// Boot database — creates all 11 tables, migrates legacy JSON vaults
+void initDatabase()
+  .then(async () => {
+    // Hydrate in-memory services from SQLite after migrations complete
+    await Promise.all([
+      thoughtLog.hydrate(),
+      taskQueue.hydrate(),
+    ]);
+    thoughtLog.publish({
+      category: "kernel",
+      title:    "DB: Hydration Complete",
+      message:  "thought_log and async_jobs hydrated from localai.db",
+    });
+  })
+  .catch((err) => {
+    logger.error({ err }, "DB init failed");
+  });
+
 void stateOrchestrator.hydrate();
+
+trackWindowForIdleMinimize("api-server", 30_000);
+trackWindowForIdleMinimize("localai-control-center", 30_000);
+spawnTraySidecar();
 
 startDistributedNodeHeartbeat();
 

@@ -31,20 +31,83 @@ export interface ThoughtInput {
   metadata?: Record<string, unknown>;
 }
 
+// ── Lazy DB access (avoids circular-import at module load time) ───────────────
+
+function getDb() {
+  // Dynamic require at call time so thought-log can be imported before
+  // the database module is fully initialised.
+  return import("../db/database.js");
+}
+
+async function persistEntry(entry: ThoughtEntry): Promise<void> {
+  try {
+    const { sqlite } = await getDb();
+    sqlite.prepare(`
+      INSERT OR IGNORE INTO thought_log
+        (id, timestamp, level, category, title, message, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.id,
+      entry.timestamp,
+      entry.level,
+      entry.category,
+      entry.title,
+      entry.message,
+      entry.metadata ? JSON.stringify(entry.metadata) : null,
+    );
+  } catch {
+    // DB may not be ready yet on very first publish — non-fatal
+  }
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
+
 class ThoughtLogService {
   private emitter = new EventEmitter();
   private entries: ThoughtEntry[] = [];
   private readonly maxEntries = 500;
+  private hydrated = false;
+
+  /** Called once after DB migrations complete. Loads last 500 rows. */
+  async hydrate(): Promise<void> {
+    if (this.hydrated) return;
+    this.hydrated = true;
+    try {
+      const { sqlite } = await getDb();
+      const rows = sqlite.prepare(`
+        SELECT id, timestamp, level, category, title, message, metadata_json
+        FROM thought_log
+        ORDER BY timestamp DESC
+        LIMIT 500
+      `).all() as Array<{
+        id: string; timestamp: string; level: string; category: string;
+        title: string; message: string; metadata_json: string | null;
+      }>;
+
+      // Rows come newest-first; we want newest-first in the ring too
+      this.entries = rows.map(r => ({
+        id:       r.id,
+        timestamp: r.timestamp,
+        level:    r.level as ThoughtLevel,
+        category: r.category as ThoughtCategory,
+        title:    r.title,
+        message:  r.message,
+        metadata: r.metadata_json ? JSON.parse(r.metadata_json) as Record<string, unknown> : undefined,
+      }));
+    } catch {
+      // DB not ready — ring starts empty, will fill on next publish
+    }
+  }
 
   publish(input: ThoughtInput): ThoughtEntry {
     const entry: ThoughtEntry = {
-      id: randomUUID(),
+      id:        randomUUID(),
       timestamp: new Date().toISOString(),
-      level: input.level ?? "info",
-      category: input.category,
-      title: input.title,
-      message: input.message,
-      metadata: input.metadata,
+      level:     input.level ?? "info",
+      category:  input.category,
+      title:     input.title,
+      message:   input.message,
+      metadata:  input.metadata,
     };
 
     this.entries.unshift(entry);
@@ -55,15 +118,19 @@ class ThoughtLogService {
     logger[entry.level === "warning" ? "warn" : entry.level](
       {
         thoughtId: entry.id,
-        level: entry.level,
-        category: entry.category,
-        title: entry.title,
-        metadata: entry.metadata,
+        level:     entry.level,
+        category:  entry.category,
+        title:     entry.title,
+        metadata:  entry.metadata,
       },
       entry.message,
     );
 
     this.emitter.emit("entry", entry);
+
+    // Write-through to SQLite (fire-and-forget; non-fatal if DB not ready)
+    void persistEntry(entry);
+
     return entry;
   }
 

@@ -119,6 +119,12 @@ export interface AppSettings {
   maxConcurrentModels: number;
   vramAlertThreshold: number;
   sidebarCollapsed: boolean;
+  // Agent permissions
+  allowAgentEdits:           boolean;
+  allowAgentExec:            boolean;
+  allowAgentSelfHeal:        boolean;
+  allowAgentRefactor:        boolean;
+  requireActionConfirmation: boolean;
 }
 
 export interface AppConfig {
@@ -167,6 +173,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   maxConcurrentModels: 1,
   vramAlertThreshold: 90,
   sidebarCollapsed: false,
+  allowAgentEdits:           true,
+  allowAgentExec:            false,
+  allowAgentSelfHeal:        true,
+  allowAgentRefactor:        true,
+  requireActionConfirmation: true,
 };
 
 function nowIso(): string {

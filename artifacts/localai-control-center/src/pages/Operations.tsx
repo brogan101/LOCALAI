@@ -3,10 +3,14 @@ import { useState } from "react";
 import {
   Server, Play, Square, RotateCcw, HardDrive, Github, RefreshCw,
   Download, RotateCcwIcon, AlertTriangle, CheckCircle, XCircle,
-  Clock, Package, Shield, ChevronDown, ChevronRight, Loader2,
-  History, Wrench, ArrowDownToLine,
+  Package, Shield, ChevronDown, ChevronRight, Loader2,
+  History, Wrench, ArrowDownToLine, Monitor, Keyboard, MousePointer,
+  Camera, Search,
 } from "lucide-react";
-import api, { type StackComponent, type RepairLogEntry, type RepairHealthEntry } from "../api.js";
+import api, {
+  type StackComponent, type RepairLogEntry, type RepairHealthEntry,
+  type BackupEntry, type OsWindow,
+} from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -313,11 +317,51 @@ function UpdaterPanel() {
 
 // ── Rollback Panel ────────────────────────────────────────────────────────────
 
+function BackupTable({ backups, onRollback, rolling }: {
+  backups: BackupEntry[];
+  onRollback: (fp: string) => void;
+  rolling: boolean;
+}) {
+  if (backups.length === 0) {
+    return <div className="text-xs py-4 text-center" style={{ color: "var(--color-muted)" }}>No backups found.</div>;
+  }
+  return (
+    <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+      {backups.map((bk, i) => (
+        <div key={bk.filePath + i}
+          className="flex items-center gap-3 px-3 py-2 text-xs"
+          style={{ borderBottom: i < backups.length - 1 ? "1px solid var(--color-border)" : undefined }}>
+          <div className="flex-1 min-w-0">
+            <div className="font-mono truncate" style={{ color: "var(--color-foreground)" }}>{bk.filePath}</div>
+            {bk.createdAt && (
+              <div style={{ color: "var(--color-muted)" }}>{new Date(bk.createdAt).toLocaleString()}</div>
+            )}
+          </div>
+          {bk.sizeBytes !== undefined && (
+            <span className="shrink-0 text-xs" style={{ color: "var(--color-muted)" }}>
+              {bk.sizeBytes < 1024 ? `${bk.sizeBytes}B`
+                : bk.sizeBytes < 1048576 ? `${(bk.sizeBytes / 1024).toFixed(0)}KB`
+                : `${(bk.sizeBytes / 1048576).toFixed(1)}MB`}
+            </span>
+          )}
+          <Btn onClick={() => onRollback(bk.filePath)} disabled={rolling} size="xs" variant="danger">
+            <RotateCcwIcon size={10} /> Rollback
+          </Btn>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RollbackPanel() {
+  const [mode, setMode] = useState<"dir" | "scan" | "file">("dir");
   const [dirPath, setDirPath] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [filePath, setFilePath] = useState("");
-  const [backups, setBackups] = useState<unknown[]>([]);
-  const [listError, setListError] = useState<string | null>(null);
+  const [dirBackups, setDirBackups]     = useState<BackupEntry[]>([]);
+  const [scanBackups, setScanBackups]   = useState<BackupEntry[]>([]);
+  const [listError, setListError]       = useState<string | null>(null);
+  const [scanning, setScanning]         = useState(false);
 
   const rollbackMut = useMutation({
     mutationFn: (fp: string) => api.rollback.rollback(fp),
@@ -328,80 +372,133 @@ function RollbackPanel() {
     setListError(null);
     try {
       const r = await api.rollback.listBackups(dirPath);
-      setBackups(r.backups ?? []);
+      setDirBackups(r.backups ?? []);
     } catch (e) {
       setListError(e instanceof Error ? e.message : "Failed to list backups");
     }
   }
 
+  async function scanWorkspace() {
+    if (!workspacePath.trim()) return;
+    setListError(null);
+    setScanning(true);
+    try {
+      const r = await api.rollback.scanBackups(workspacePath);
+      setScanBackups(r.backups ?? []);
+    } catch (e) {
+      setListError(e instanceof Error ? e.message : "Scan failed");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  const modeLabels = [
+    { id: "dir" as const,  label: "By Directory" },
+    { id: "scan" as const, label: "Scan Workspace" },
+    { id: "file" as const, label: "Single File" },
+  ];
+
   return (
     <Card>
       <CardHeader icon={History} title="Rollback" />
-      <div className="p-4 space-y-4">
-        <div>
-          <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Directory path — list all backups</div>
-          <div className="flex gap-2">
-            <input
-              value={dirPath}
-              onChange={(e) => setDirPath(e.target.value)}
-              placeholder="C:\Users\you\LocalAI-Tools\"
-              className="flex-1 px-3 py-1.5 rounded-lg text-sm font-mono"
-              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
-            />
-            <Btn onClick={() => void listBackups()} disabled={!dirPath.trim()} variant="accent">
-              <History size={11} /> List
-            </Btn>
-          </div>
-          {listError && <div className="text-xs mt-1" style={{ color: "var(--color-error)" }}>{listError}</div>}
-        </div>
 
-        {backups.length > 0 && (
-          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
-            {backups.map((b, i) => {
-              const bk = b as { filePath?: string; backupPath?: string; createdAt?: string };
-              return (
-                <div key={i}
-                  className="flex items-center gap-3 px-3 py-2 text-xs"
-                  style={{ borderBottom: i < backups.length - 1 ? "1px solid var(--color-border)" : undefined }}>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-mono truncate" style={{ color: "var(--color-foreground)" }}>{bk.filePath ?? bk.backupPath ?? "unknown"}</div>
-                    {bk.createdAt && <div style={{ color: "var(--color-muted)" }}>{new Date(bk.createdAt).toLocaleString()}</div>}
-                  </div>
-                  {bk.filePath && (
-                    <Btn onClick={() => rollbackMut.mutate(bk.filePath!)} disabled={rollbackMut.isPending} size="xs" variant="danger">
-                      <RotateCcwIcon size={10} /> Rollback
-                    </Btn>
-                  )}
+      {/* Mode switcher */}
+      <div className="flex gap-1 px-4 py-2" style={{ borderBottom: "1px solid var(--color-border)" }}>
+        {modeLabels.map(m => (
+          <button key={m.id} onClick={() => setMode(m.id)}
+            className="px-3 py-1 rounded-lg text-xs"
+            style={{
+              background: mode === m.id ? "var(--color-accent)" : "var(--color-elevated)",
+              color: mode === m.id ? "#fff" : "var(--color-muted)",
+            }}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4">
+        {mode === "dir" && (
+          <>
+            <div>
+              <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>List backups in a directory</div>
+              <div className="flex gap-2">
+                <input
+                  value={dirPath}
+                  onChange={e => setDirPath(e.target.value)}
+                  placeholder="C:\Users\you\LocalAI-Tools\"
+                  className="flex-1 px-3 py-1.5 rounded-lg text-sm font-mono"
+                  style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+                />
+                <Btn onClick={() => void listBackups()} disabled={!dirPath.trim()} variant="accent">
+                  <History size={11} /> List
+                </Btn>
+              </div>
+              {listError && <div className="text-xs mt-1" style={{ color: "var(--color-error)" }}>{listError}</div>}
+            </div>
+            <BackupTable backups={dirBackups} onRollback={fp => rollbackMut.mutate(fp)} rolling={rollbackMut.isPending} />
+          </>
+        )}
+
+        {mode === "scan" && (
+          <>
+            <div>
+              <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>
+                Recursively scan a workspace for all .localai-backups folders
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={workspacePath}
+                  onChange={e => setWorkspacePath(e.target.value)}
+                  placeholder="C:\Users\you\my-project"
+                  className="flex-1 px-3 py-1.5 rounded-lg text-sm font-mono"
+                  style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+                />
+                <Btn onClick={() => void scanWorkspace()} disabled={!workspacePath.trim() || scanning} variant="accent">
+                  {scanning ? <Loader2 size={11} className="animate-spin" /> : <Search size={11} />}
+                  {scanning ? "Scanning…" : "Scan"}
+                </Btn>
+              </div>
+              {listError && <div className="text-xs mt-1" style={{ color: "var(--color-error)" }}>{listError}</div>}
+              {!scanning && scanBackups.length > 0 && (
+                <div className="text-xs mt-1" style={{ color: "var(--color-muted)" }}>
+                  Found {scanBackups.length} backup{scanBackups.length !== 1 ? "s" : ""}
                 </div>
-              );
-            })}
+              )}
+            </div>
+            <BackupTable backups={scanBackups} onRollback={fp => rollbackMut.mutate(fp)} rolling={rollbackMut.isPending} />
+          </>
+        )}
+
+        {mode === "file" && (
+          <div>
+            <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Rollback a specific file to its last backup</div>
+            <div className="flex gap-2">
+              <input
+                value={filePath}
+                onChange={e => setFilePath(e.target.value)}
+                placeholder="C:\path\to\file.json"
+                className="flex-1 px-3 py-1.5 rounded-lg text-sm font-mono"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+              <Btn onClick={() => rollbackMut.mutate(filePath)} disabled={!filePath.trim() || rollbackMut.isPending} variant="danger">
+                {rollbackMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <RotateCcwIcon size={11} />}
+                Rollback
+              </Btn>
+            </div>
+            <Feedback
+              isPending={rollbackMut.isPending}
+              isSuccess={rollbackMut.isSuccess}
+              isError={rollbackMut.isError}
+              pendingMsg="Rolling back…"
+              successMsg="Rollback complete"
+              error={rollbackMut.error as Error | null}
+            />
           </div>
         )}
 
-        <div>
-          <div className="text-xs mb-1" style={{ color: "var(--color-muted)" }}>Rollback specific file</div>
-          <div className="flex gap-2">
-            <input
-              value={filePath}
-              onChange={(e) => setFilePath(e.target.value)}
-              placeholder="C:\path\to\file.json"
-              className="flex-1 px-3 py-1.5 rounded-lg text-sm font-mono"
-              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
-            />
-            <Btn onClick={() => rollbackMut.mutate(filePath)} disabled={!filePath.trim() || rollbackMut.isPending} variant="danger">
-              {rollbackMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <RotateCcwIcon size={11} />}
-              Rollback
-            </Btn>
-          </div>
-          <Feedback
-            isPending={rollbackMut.isPending}
-            isSuccess={rollbackMut.isSuccess}
-            isError={rollbackMut.isError}
-            pendingMsg="Rolling back…"
-            successMsg="Rollback complete"
-            error={rollbackMut.error as Error | null}
-          />
-        </div>
+        {rollbackMut.isSuccess && mode !== "file" && (
+          <div className="text-xs" style={{ color: "var(--color-success)" }}>Rollback complete</div>
+        )}
       </div>
     </Card>
   );
@@ -563,9 +660,230 @@ function SystemUpdatesPanel() {
   );
 }
 
+// ── OS Interop Panel ──────────────────────────────────────────────────────────
+
+function OsInteropPanel() {
+  const [windowFilter, setWindowFilter]   = useState("");
+  const [focusPattern, setFocusPattern]   = useState("");
+  const [keysInput, setKeysInput]         = useState("");
+  const [textInput, setTextInput]         = useState("");
+  const [clickX, setClickX]               = useState("");
+  const [clickY, setClickY]               = useState("");
+  const [screenshot, setScreenshot]       = useState<string | null>(null);
+  const [feedback, setFeedback]           = useState<{ msg: string; ok: boolean } | null>(null);
+
+  const settingsQ = useQuery({
+    queryKey: ["settings"],
+    queryFn: () => api.settings.get(),
+  });
+
+  const windowsQ = useQuery<{ success: boolean; windows: OsWindow[] }>({
+    queryKey: ["os-windows", windowFilter],
+    queryFn: () => api.os.windows(windowFilter || undefined),
+    enabled: settingsQ.data?.settings?.allowAgentExec === true,
+    staleTime: 10_000,
+  });
+
+  const focusMut = useMutation({
+    mutationFn: () => api.os.focus(focusPattern),
+    onSuccess: r => setFeedback({ msg: r.focused ? "Window focused" : "No matching window", ok: r.focused }),
+  });
+  const sendKeysMut = useMutation({
+    mutationFn: () => api.os.sendKeys(keysInput),
+    onSuccess: () => setFeedback({ msg: "Keys sent", ok: true }),
+    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+  });
+  const typeTextMut = useMutation({
+    mutationFn: () => api.os.typeText(textInput),
+    onSuccess: () => setFeedback({ msg: "Text typed", ok: true }),
+    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+  });
+  const clickMut = useMutation({
+    mutationFn: () => api.os.click(parseFloat(clickX), parseFloat(clickY)),
+    onSuccess: () => setFeedback({ msg: "Click sent", ok: true }),
+    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+  });
+  const screenshotMut = useMutation({
+    mutationFn: () => api.os.screenshot(),
+    onSuccess: r => { setScreenshot(r.base64); setFeedback({ msg: "Screenshot captured", ok: true }); },
+    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+  });
+
+  const execDisabled = settingsQ.data?.settings?.allowAgentExec === false;
+
+  if (execDisabled) {
+    return (
+      <Card>
+        <CardHeader icon={Monitor} title="OS Interop" />
+        <div className="p-8 flex flex-col items-center gap-3 text-center">
+          <Monitor size={24} style={{ color: "var(--color-muted)" }} />
+          <div className="text-sm font-medium" style={{ color: "var(--color-foreground)" }}>OS Interop is disabled</div>
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+            Enable <strong>Allow Agent Exec</strong> in Settings → Agent Permissions to use this panel.
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const windows: OsWindow[] = windowsQ.data?.windows ?? [];
+
+  return (
+    <Card>
+      <CardHeader icon={Monitor} title="OS Interop"
+        actions={
+          feedback && (
+            <span className="text-xs" style={{ color: feedback.ok ? "var(--color-success)" : "var(--color-error)" }}>
+              {feedback.msg}
+            </span>
+          )
+        }
+      />
+
+      <div className="p-4 space-y-5">
+        {/* Window list */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-semibold" style={{ color: "var(--color-muted)" }}>OPEN WINDOWS</span>
+            <div className="flex-1 flex items-center gap-2">
+              <input
+                value={windowFilter}
+                onChange={e => setWindowFilter(e.target.value)}
+                placeholder="Filter by title…"
+                className="flex-1 px-2 py-1 rounded text-xs"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+            </div>
+          </div>
+          {windowsQ.isLoading && (
+            <div className="text-xs flex items-center gap-1" style={{ color: "var(--color-muted)" }}>
+              <Loader2 size={11} className="animate-spin" /> Loading…
+            </div>
+          )}
+          {windows.length === 0 && !windowsQ.isLoading && (
+            <div className="text-xs" style={{ color: "var(--color-muted)" }}>No windows found</div>
+          )}
+          {windows.length > 0 && (
+            <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+              {windows.slice(0, 12).map((w, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-xs"
+                  style={{ borderBottom: i < Math.min(windows.length, 12) - 1 ? "1px solid var(--color-border)" : undefined }}>
+                  <Monitor size={11} style={{ color: "var(--color-muted)", flexShrink: 0 }} />
+                  <span className="flex-1 truncate" style={{ color: "var(--color-foreground)" }}>{w.title}</span>
+                  {w.processName && <span style={{ color: "var(--color-muted)" }}>{w.processName}</span>}
+                  <Btn size="xs" onClick={() => { setFocusPattern(w.title); focusMut.mutate(); }}>
+                    Focus
+                  </Btn>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Focus window */}
+        <div>
+          <div className="text-xs mb-1 font-semibold" style={{ color: "var(--color-muted)" }}>FOCUS WINDOW</div>
+          <div className="flex gap-2">
+            <input
+              value={focusPattern}
+              onChange={e => setFocusPattern(e.target.value)}
+              placeholder="Window title pattern…"
+              className="flex-1 px-3 py-1.5 rounded-lg text-xs"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+            <Btn onClick={() => focusMut.mutate()} disabled={!focusPattern.trim() || focusMut.isPending} variant="accent" size="xs">
+              Focus
+            </Btn>
+          </div>
+        </div>
+
+        {/* Send keys */}
+        <div>
+          <div className="text-xs mb-1 font-semibold" style={{ color: "var(--color-muted)" }}>SEND KEYS</div>
+          <div className="flex gap-2">
+            <input
+              value={keysInput}
+              onChange={e => setKeysInput(e.target.value)}
+              placeholder="{CTRL}{C} or {ENTER}…"
+              className="flex-1 px-3 py-1.5 rounded-lg text-xs font-mono"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+            <Btn onClick={() => sendKeysMut.mutate()} disabled={!keysInput.trim() || sendKeysMut.isPending} size="xs">
+              <Keyboard size={10} /> Send
+            </Btn>
+          </div>
+        </div>
+
+        {/* Type text */}
+        <div>
+          <div className="text-xs mb-1 font-semibold" style={{ color: "var(--color-muted)" }}>TYPE TEXT</div>
+          <div className="flex gap-2">
+            <input
+              value={textInput}
+              onChange={e => setTextInput(e.target.value)}
+              placeholder="Literal text to type…"
+              className="flex-1 px-3 py-1.5 rounded-lg text-xs"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+            <Btn onClick={() => typeTextMut.mutate()} disabled={!textInput.trim() || typeTextMut.isPending} size="xs">
+              <Keyboard size={10} /> Type
+            </Btn>
+          </div>
+        </div>
+
+        {/* Click */}
+        <div>
+          <div className="text-xs mb-1 font-semibold" style={{ color: "var(--color-muted)" }}>CLICK AT COORDINATES</div>
+          <div className="flex gap-2">
+            <input
+              value={clickX}
+              onChange={e => setClickX(e.target.value)}
+              placeholder="X"
+              className="w-20 px-3 py-1.5 rounded-lg text-xs font-mono"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+            <input
+              value={clickY}
+              onChange={e => setClickY(e.target.value)}
+              placeholder="Y"
+              className="w-20 px-3 py-1.5 rounded-lg text-xs font-mono"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+            />
+            <Btn
+              onClick={() => clickMut.mutate()}
+              disabled={!clickX.trim() || !clickY.trim() || !Number.isFinite(parseFloat(clickX)) || !Number.isFinite(parseFloat(clickY)) || clickMut.isPending}
+              size="xs">
+              <MousePointer size={10} /> Click
+            </Btn>
+          </div>
+        </div>
+
+        {/* Screenshot */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <div className="text-xs font-semibold" style={{ color: "var(--color-muted)" }}>SCREENSHOT</div>
+            <Btn onClick={() => screenshotMut.mutate()} disabled={screenshotMut.isPending} size="xs">
+              {screenshotMut.isPending ? <Loader2 size={10} className="animate-spin" /> : <Camera size={10} />}
+              {screenshotMut.isPending ? "Capturing…" : "Capture"}
+            </Btn>
+          </div>
+          {screenshot && (
+            <img
+              src={`data:image/png;base64,${screenshot}`}
+              alt="Screenshot"
+              className="w-full rounded-lg"
+              style={{ border: "1px solid var(--color-border)", maxHeight: 300, objectFit: "contain" }}
+            />
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type OpsTab = "stack" | "updater" | "rollback" | "repair" | "sysupdate";
+type OpsTab = "stack" | "updater" | "rollback" | "repair" | "sysupdate" | "osinterop";
 
 const TABS: Array<{ id: OpsTab; label: string }> = [
   { id: "stack",     label: "Stack" },
@@ -573,6 +891,7 @@ const TABS: Array<{ id: OpsTab; label: string }> = [
   { id: "rollback",  label: "Rollback" },
   { id: "repair",    label: "Repair Log" },
   { id: "sysupdate", label: "System Updates" },
+  { id: "osinterop", label: "OS Interop" },
 ];
 
 export default function OperationsPage() {
@@ -613,6 +932,7 @@ export default function OperationsPage() {
       {tab === "rollback"  && <RollbackPanel />}
       {tab === "repair"    && <RepairLogPanel />}
       {tab === "sysupdate" && <SystemUpdatesPanel />}
+      {tab === "osinterop" && <OsInteropPanel />}
     </div>
   );
 }

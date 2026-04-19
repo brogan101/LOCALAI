@@ -6,6 +6,8 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { ollamaReachable, fetchJson, isWindows, toolsRoot, ensureDir } from "../lib/runtime.js";
 import { writeManagedJson } from "../lib/snapshot-manager.js";
+import { getOllamaUrl } from "../lib/ollama-url.js";
+import { modelRolesService } from "../lib/model-roles-service.js";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -185,7 +187,7 @@ router.post("/updater/check", async (req, res) => {
   if (scope === "all" || scope === "models") {
     const states = await loadModelStates();
     if (await ollamaReachable()) {
-      const data = await fetchJson<{ models?: Array<{ name: string; digest?: string; size?: number }> }>("http://127.0.0.1:11434/api/tags", undefined, 10000).catch(() => ({ models: [] as Array<{ name: string; digest?: string; size?: number }> }));
+      const data = await fetchJson<{ models?: Array<{ name: string; digest?: string; size?: number }> }>(`${await getOllamaUrl()}/api/tags`, undefined, 10000).catch(() => ({ models: [] as Array<{ name: string; digest?: string; size?: number }> }));
       for (const m of data.models || []) {
         const shortDigest = m.digest?.slice(0, 12) || "";
         const check = await checkOllamaModelUpdate(m.name, shortDigest);
@@ -273,7 +275,7 @@ router.post("/updater/rollback/:modelName", async (req, res) => {
 router.get("/updater/model-states", async (_req, res) => {
   const states = await loadModelStates();
   if (await ollamaReachable()) {
-    const running = await fetchJson<{ models?: Array<{ name: string }> }>("http://127.0.0.1:11434/api/ps", undefined, 5000).catch(() => ({ models: [] as Array<{ name: string }> }));
+    const running = await fetchJson<{ models?: Array<{ name: string }> }>(`${await getOllamaUrl()}/api/ps`, undefined, 5000).catch(() => ({ models: [] as Array<{ name: string }> }));
     const runningSet = new Set((running.models || []).map((m) => m.name));
     for (const [name, state] of Object.entries(states)) {
       if (runningSet.has(name) && (state as any).lifecycle !== "running") {
@@ -304,7 +306,7 @@ router.post("/updater/backup-settings", async (_req, res) => {
   await ensureDir(backupDir);
   const filesToBackup = [
     path.join(TOOLS_DIR, "config.json"),
-    path.join(TOOLS_DIR, "model-roles.json"),
+    modelRolesService.filePath,
     path.join(TOOLS_DIR, "projects.json"),
     path.join(TOOLS_DIR, "integrations-state.json"),
     path.join(TOOLS_DIR, "updater-manifest.json"),

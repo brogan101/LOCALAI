@@ -23,6 +23,7 @@ import { logger } from "./logger.js";
 import { thoughtLog } from "./thought-log.js";
 import { isWindows, toolsRoot, postJson } from "./runtime.js";
 import { writeManagedFile } from "./snapshot-manager.js";
+import { DEFAULT_FALLBACK_MODEL } from "../config/models.config.js";
 
 const execAsync = promisify(cpExec);
 const __filename = fileURLToPath(import.meta.url);
@@ -30,7 +31,6 @@ const __dirname  = path.dirname(__filename);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const OLLAMA_BASE         = "http://127.0.0.1:11434";
 const MAX_REPAIR_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_MS  = 60_000;
 
@@ -85,18 +85,19 @@ export interface DiagnoseResult {
 
 async function getPreferredModel(): Promise<string> {
   try {
-    const rolesFile = path.join(toolsRoot(), "model-roles.json");
-    if (existsSync(rolesFile)) {
-      const roles = JSON.parse(await readFile(rolesFile, "utf-8")) as Record<string, string>;
-      return roles["primary-coding"] || roles.chat || "llama3.1";
-    }
+    const { modelRolesService } = await import("./model-roles-service.js");
+    return await modelRolesService.getRole("primary-coding")
+        ?? await modelRolesService.getRole("chat")
+        ?? DEFAULT_FALLBACK_MODEL;
   } catch { /* fall through */ }
-  return "llama3.1";
+  return DEFAULT_FALLBACK_MODEL;
 }
 
 async function ollamaGenerate(prompt: string, model: string, timeoutMs = 60_000): Promise<string> {
+  const { getOllamaUrl } = await import("./ollama-url.js");
+  const base = await getOllamaUrl();
   const result = await postJson<{ response?: string }>(
-    `${OLLAMA_BASE}/api/generate`,
+    `${base}/api/generate`,
     { model, prompt, stream: false },
     timeoutMs,
   );

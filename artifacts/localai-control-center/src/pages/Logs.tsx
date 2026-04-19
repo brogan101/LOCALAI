@@ -1,7 +1,7 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { RefreshCw, Filter, Radio, WifiOff } from "lucide-react";
-import api, { type LogLine, type ThoughtEntry, type ActivityEntry } from "../api.js";
+import { RefreshCw, Filter, Radio, WifiOff, RotateCcw, ShieldAlert } from "lucide-react";
+import api, { type LogLine, type ThoughtEntry, type ActivityEntry, type BackupEntry } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -21,7 +21,7 @@ function thoughtLevelColor(level: ThoughtEntry["level"]) {
   return "var(--color-muted)";
 }
 
-type Tab = "system" | "thoughts" | "activity";
+type Tab = "system" | "thoughts" | "activity" | "audit";
 
 // ── System log line ───────────────────────────────────────────────────────────
 
@@ -92,6 +92,107 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
       <span className="shrink-0 w-16 font-semibold" style={{ color: statusColor }}>{entry.status}</span>
       {entry.component && <span className="shrink-0 w-20 opacity-60">{entry.component}</span>}
       <span className="flex-1" style={{ color: "var(--color-foreground)" }}>{entry.message}</span>
+    </div>
+  );
+}
+
+// ── Audit tab ─────────────────────────────────────────────────────────────────
+
+const AUDIT_TITLES = [
+  "Sovereign Self-Edit", "Execution", "Agent Action",
+  "Window Auto-Minimized", "File Applied", "Verification Failed",
+];
+
+function AuditTab({ filter }: { filter: string }) {
+  const qc = useQueryClient();
+
+  const thoughtsQ = useQuery({
+    queryKey: ["audit-thoughts"],
+    queryFn: () => api.observability.thoughts(500),
+    staleTime: 10_000,
+  });
+
+  const rollbackMut = useMutation({
+    mutationFn: (filePath: string) => api.rollback.rollback(filePath),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["audit-thoughts"] }),
+  });
+
+  const entries = (thoughtsQ.data?.entries ?? []).filter((e: ThoughtEntry) =>
+    AUDIT_TITLES.some(t => e.title.startsWith(t))
+  );
+
+  const filtered = entries.filter((e: ThoughtEntry) =>
+    !filter ||
+    e.title.toLowerCase().includes(filter.toLowerCase()) ||
+    e.message.toLowerCase().includes(filter.toLowerCase()) ||
+    (typeof (e.metadata as Record<string, unknown>)?.["filePath"] === "string" &&
+      ((e.metadata as Record<string, unknown>)["filePath"] as string).toLowerCase().includes(filter.toLowerCase()))
+  );
+
+  if (thoughtsQ.isLoading) {
+    return <div className="p-6 text-sm text-center" style={{ color: "var(--color-muted)" }}>Loading audit log…</div>;
+  }
+
+  if (filtered.length === 0) {
+    return (
+      <div className="p-6 text-sm text-center" style={{ color: "var(--color-muted)" }}>
+        No audit events yet. Apply an agent edit or run a command to see entries here.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-elevated)" }}>
+            {["Timestamp", "Category", "Action", "Path / Command", "Result", ""].map(h => (
+              <th key={h} className="px-3 py-2 text-left font-semibold"
+                style={{ color: "var(--color-muted)" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((e: ThoughtEntry) => {
+            const meta = (e.metadata ?? {}) as Record<string, unknown>;
+            const filePath = typeof meta["filePath"] === "string" ? meta["filePath"] : undefined;
+            const command  = typeof meta["command"]  === "string" ? meta["command"]  : undefined;
+            const backupPath = typeof meta["backupPath"] === "string" ? meta["backupPath"] : undefined;
+            const isRollbackPending = rollbackMut.isPending && rollbackMut.variables === filePath;
+
+            return (
+              <tr key={e.id} style={{ borderBottom: "1px solid var(--color-border)" }}
+                className="hover:bg-[color-mix(in_srgb,var(--color-elevated)_50%,transparent)]">
+                <td className="px-3 py-2 font-mono whitespace-nowrap" style={{ color: "var(--color-muted)" }}>
+                  {e.timestamp.slice(0, 19).replace("T", " ")}
+                </td>
+                <td className="px-3 py-2" style={{ color: "var(--color-muted)" }}>{e.category}</td>
+                <td className="px-3 py-2 font-medium" style={{ color: thoughtLevelColor(e.level) }}>{e.title}</td>
+                <td className="px-3 py-2 font-mono max-w-[200px] truncate" style={{ color: "var(--color-foreground)" }}>
+                  {filePath ?? command ?? "—"}
+                </td>
+                <td className="px-3 py-2" style={{ color: "var(--color-muted)" }}>
+                  {e.message.slice(0, 60)}{e.message.length > 60 ? "…" : ""}
+                </td>
+                <td className="px-3 py-2">
+                  {backupPath && filePath && (
+                    <button
+                      disabled={isRollbackPending}
+                      onClick={() => {
+                        if (window.confirm(`Rollback ${filePath}?`)) rollbackMut.mutate(filePath);
+                      }}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded text-xs disabled:opacity-40"
+                      style={{ background: "color-mix(in srgb, var(--color-warn) 12%, transparent)", color: "var(--color-warn)", border: "1px solid color-mix(in srgb, var(--color-warn) 25%, transparent)" }}>
+                      <RotateCcw size={9} />
+                      Rollback
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -215,6 +316,7 @@ export default function LogsPage() {
     { id: "thoughts", label: "Thought Log",  count: thoughts.length },
     { id: "system",   label: "System Logs",  count: sysLines.length },
     { id: "activity", label: "Activity",     count: activities.length },
+    { id: "audit",    label: "Audit" },
   ];
 
   return (
@@ -352,6 +454,11 @@ export default function LogsPage() {
             )}
             {activities.map((e) => <ActivityRow key={e.id} entry={e} />)}
           </div>
+        )}
+
+        {/* Audit */}
+        {tab === "audit" && (
+          <AuditTab filter={filter} />
         )}
 
         <div ref={bottomRef} />

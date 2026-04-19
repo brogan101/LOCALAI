@@ -16,6 +16,8 @@ import {
   execCommand,
 } from "../lib/runtime.js";
 import { writeManagedJson, writeManagedFile } from "../lib/snapshot-manager.js";
+import { getOllamaUrl } from "../lib/ollama-url.js";
+import { modelRolesService } from "../lib/model-roles-service.js";
 
 const router = Router();
 const HOME = os.homedir();
@@ -191,10 +193,9 @@ const COMPONENTS: ComponentDef[] = [
     name: "Model Role Assignments",
     category: "Config",
     detect: async () => {
-      const rolesFile = path.join(TOOLS_DIR, "model-roles.json");
-      const exists = existsSync(rolesFile);
+      const exists = existsSync(modelRolesService.filePath);
       if (!exists) return { installed: false, version: null };
-      const roles = JSON.parse(await readFile(rolesFile, "utf-8"));
+      const roles = await modelRolesService.getRoles();
       const assigned = Object.values(roles).filter(Boolean).length;
       return { installed: true, version: `${assigned} roles assigned` };
     },
@@ -273,7 +274,7 @@ router.get("/repair/health", async (_req, res) => {
     if (ollamaRunning) {
       try {
         const { fetchJson } = await import("../lib/runtime.js");
-        const models = await fetchJson<{ models?: unknown[] }>("http://127.0.0.1:11434/api/tags", undefined, 3000);
+        const models = await fetchJson<{ models?: unknown[] }>(`${await getOllamaUrl()}/api/tags`, undefined, 3000);
         if (!models.models?.length) recommendations.push("No models installed — pull at least one from the Models page");
       } catch {}
     }
@@ -319,19 +320,12 @@ router.post("/repair/run", async (req, res) => {
       continue;
     }
     if (comp.repairAction === "config-write" && id === "model-roles") {
-      const rolesFile = path.join(TOOLS_DIR, "model-roles.json");
-      if (!existsSync(rolesFile)) {
-        await ensureDir(TOOLS_DIR);
-        await writeManagedJson(rolesFile, {
-          "primary-coding": "",
-          "fast-coding": "",
-          autocomplete: "",
-          reasoning: "",
-          embeddings: "",
-          chat: "",
-        });
+      if (!existsSync(modelRolesService.filePath)) {
+        // ensureDefaultRoles is called lazily by the service on next getRoles()
+        modelRolesService.invalidate();
+        await modelRolesService.getRoles();
       }
-      results.push({ id, name: comp.name, action: "config-write", success: true, message: "Created default model-roles.json", durationMs: Date.now() - start });
+      results.push({ id, name: comp.name, action: "config-write", success: true, message: "Created default model-roles.json from bundled defaults", durationMs: Date.now() - start });
       continue;
     }
     try {

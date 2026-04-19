@@ -24,6 +24,7 @@ import { randomUUID } from "crypto";
 import { fetchJson, postJson, fetchText, toolsRoot, commandExists } from "./runtime.js";
 import { logger } from "./logger.js";
 import { thoughtLog } from "./thought-log.js";
+import { DEFAULT_FALLBACK_MODEL } from "../config/models.config.js";
 
 const execFileAsync = promisify(cpExecFile);
 
@@ -31,7 +32,6 @@ const execFileAsync = promisify(cpExecFile);
 
 const COMFYUI_BASE    = "http://127.0.0.1:8188";
 const SD_WEBUI_BASE   = "http://127.0.0.1:7860";
-const OLLAMA_BASE     = "http://127.0.0.1:11434";
 const PIPELINE_DIR    = path.join(toolsRoot(), "studio-pipeline");
 const IMAGEGEN_DIR    = path.join(PIPELINE_DIR, "imagegen");
 const CAD_DIR         = path.join(PIPELINE_DIR, "cad");
@@ -51,8 +51,10 @@ async function ollamaGenerate(
   model: string,
   timeoutMs = 60_000,
 ): Promise<string> {
+  const { getOllamaUrl } = await import("./ollama-url.js");
+  const base = await getOllamaUrl();
   const result = await postJson<{ response?: string }>(
-    `${OLLAMA_BASE}/api/generate`,
+    `${base}/api/generate`,
     { model, prompt, stream: false },
     timeoutMs,
   );
@@ -61,16 +63,17 @@ async function ollamaGenerate(
 
 async function getPreferredModel(preferCoding = false): Promise<string> {
   try {
-    const rolesFile = path.join(toolsRoot(), "model-roles.json");
-    if (existsSync(rolesFile)) {
-      const roles = JSON.parse(await readFile(rolesFile, "utf-8")) as Record<string, string>;
-      if (preferCoding) {
-        return roles["primary-coding"] || roles.chat || "llama3.1";
-      }
-      return roles.chat || roles["primary-coding"] || "llama3.1";
+    const { modelRolesService } = await import("./model-roles-service.js");
+    if (preferCoding) {
+      return await modelRolesService.getRole("primary-coding")
+          ?? await modelRolesService.getRole("chat")
+          ?? DEFAULT_FALLBACK_MODEL;
     }
+    return await modelRolesService.getRole("chat")
+        ?? await modelRolesService.getRole("primary-coding")
+        ?? DEFAULT_FALLBACK_MODEL;
   } catch { /* fall through */ }
-  return "llama3.1";
+  return DEFAULT_FALLBACK_MODEL;
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

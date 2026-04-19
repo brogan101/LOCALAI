@@ -12,8 +12,13 @@ import {
   AlertTriangle,
   Loader2,
   X,
+  Globe,
+  Sparkles,
+  Zap,
+  Filter,
+  History,
 } from "lucide-react";
-import api, { type ModelListItem } from "../api.js";
+import api, { type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -210,8 +215,8 @@ function ModelRow({ model }: { model: ModelListItem }) {
 
 // ── Pull modal ────────────────────────────────────────────────────────────────
 
-function PullModal({ onClose }: { onClose: () => void }) {
-  const [modelName, setModelName] = useState("");
+function PullModal({ onClose, initialName = "" }: { onClose: () => void; initialName?: string }) {
+  const [modelName, setModelName] = useState(initialName);
   const qc = useQueryClient();
 
   const pullMut = useMutation({
@@ -282,13 +287,314 @@ function PullModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ── Catalog tab ───────────────────────────────────────────────────────────────
+
+const NOVELTY_COLORS: Record<DiscoveredModelCard["novelty"], string> = {
+  recommended: "var(--color-success)",
+  fresh:       "var(--color-info)",
+  trending:    "var(--color-accent)",
+  abliterated: "var(--color-warn)",
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  coding:     "var(--color-info)",
+  reasoning:  "var(--color-accent)",
+  vision:     "#a855f7",
+  embedding:  "var(--color-muted)",
+  general:    "var(--color-foreground)",
+  uncensored: "var(--color-warn)",
+};
+
+function vramColor(vramGb: number | undefined, freeGb: number, totalGb: number): string {
+  if (!vramGb) return "var(--color-muted)";
+  if (vramGb <= freeGb)  return "var(--color-success)";
+  if (vramGb <= totalGb) return "var(--color-warn)";
+  return "var(--color-error)";
+}
+
+function CatalogTab({ onPull }: { onPull: (name: string) => void }) {
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [noveltyFilter, setNoveltyFilter] = useState<string>("all");
+  const [vramFilter, setVramFilter] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const catalogQ = useQuery({
+    queryKey: ["catalog"],
+    queryFn: () => api.modelsExtra.discover(),
+    staleTime: 120_000,
+  });
+
+  const hwQ = useQuery<HardwareSnapshot>({
+    queryKey: ["hardware"],
+    queryFn: () => api.hardware.probe(),
+    staleTime: 60_000,
+  });
+
+  const freeVramGb  = hwQ.data ? hwQ.data.gpu.freeVramBytes  / 1024 ** 3 : 0;
+  const totalVramGb = hwQ.data ? hwQ.data.gpu.totalVramBytes / 1024 ** 3 : 0;
+
+  const cards: DiscoveredModelCard[] = catalogQ.data?.cards ?? [];
+
+  const categories = Array.from(new Set(cards.map(c => c.category))).sort();
+  const novelties  = ["recommended", "fresh", "trending", "abliterated"] as const;
+
+  const filtered = cards.filter(c => {
+    if (categoryFilter !== "all" && c.category !== categoryFilter) return false;
+    if (noveltyFilter  !== "all" && c.novelty  !== noveltyFilter)  return false;
+    if (vramFilter && c.vramEstimateGb && c.vramEstimateGb > freeVramGb) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!c.modelName.toLowerCase().includes(q) && !c.whyRecommended.toLowerCase().includes(q) && !c.category.includes(q)) return false;
+    }
+    return true;
+  });
+
+  if (catalogQ.isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16" style={{ color: "var(--color-muted)" }}>
+        <Loader2 size={20} className="animate-spin mr-2" /> Fetching model catalog…
+      </div>
+    );
+  }
+
+  if (catalogQ.isError || cards.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 gap-2">
+        <Globe size={24} style={{ color: "var(--color-muted)" }} />
+        <span className="text-sm" style={{ color: "var(--color-muted)" }}>
+          Catalog unavailable — Ollama must be reachable to discover models.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Filters */}
+      <div className="flex items-center gap-2 flex-wrap px-6 py-3 shrink-0"
+        style={{ borderBottom: "1px solid var(--color-border)" }}>
+        {/* Search */}
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--color-muted)" }} />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search catalog…"
+            className="pl-8 pr-3 py-1.5 rounded-lg text-xs outline-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", width: 160 }}
+          />
+        </div>
+        {/* Category chips */}
+        {["all", ...categories].map(cat => (
+          <button key={cat}
+            onClick={() => setCategoryFilter(cat)}
+            className="px-2.5 py-1 rounded-lg text-xs capitalize"
+            style={{
+              background: categoryFilter === cat ? `color-mix(in srgb, ${CATEGORY_COLORS[cat] ?? "var(--color-accent)"} 15%, transparent)` : "var(--color-elevated)",
+              color:      categoryFilter === cat ? (CATEGORY_COLORS[cat] ?? "var(--color-accent)") : "var(--color-muted)",
+              border: `1px solid ${categoryFilter === cat ? `color-mix(in srgb, ${CATEGORY_COLORS[cat] ?? "var(--color-accent)"} 30%, transparent)` : "var(--color-border)"}`,
+            }}>
+            {cat}
+          </button>
+        ))}
+        {/* Novelty chips */}
+        {novelties.map(n => (
+          <button key={n}
+            onClick={() => setNoveltyFilter(noveltyFilter === n ? "all" : n)}
+            className="px-2.5 py-1 rounded-lg text-xs capitalize"
+            style={{
+              background: noveltyFilter === n ? `color-mix(in srgb, ${NOVELTY_COLORS[n]} 15%, transparent)` : "var(--color-elevated)",
+              color:      noveltyFilter === n ? NOVELTY_COLORS[n] : "var(--color-muted)",
+              border: `1px solid ${noveltyFilter === n ? `color-mix(in srgb, ${NOVELTY_COLORS[n]} 25%, transparent)` : "var(--color-border)"}`,
+            }}>
+            {n}
+          </button>
+        ))}
+        {/* Fits-in-VRAM filter */}
+        <button
+          onClick={() => setVramFilter(v => !v)}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs"
+          style={{
+            background: vramFilter ? "color-mix(in srgb, var(--color-success) 15%, transparent)" : "var(--color-elevated)",
+            color:      vramFilter ? "var(--color-success)" : "var(--color-muted)",
+            border:     `1px solid ${vramFilter ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : "var(--color-border)"}`,
+          }}>
+          <Filter size={11} /> Fits in VRAM
+        </button>
+        <span className="ml-auto text-xs" style={{ color: "var(--color-muted)" }}>
+          {filtered.length} / {cards.length} models
+        </span>
+      </div>
+
+      {/* Card grid */}
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+          {filtered.map(card => {
+            const color   = CATEGORY_COLORS[card.category] ?? "var(--color-foreground)";
+            const nvColor = NOVELTY_COLORS[card.novelty];
+            const vc      = vramColor(card.vramEstimateGb, freeVramGb, totalVramGb);
+            return (
+              <div key={card.spec} className="rounded-xl p-4 flex flex-col gap-2"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+                {/* Name + badges */}
+                <div className="flex items-start gap-2 flex-wrap">
+                  <span className="font-mono font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>
+                    {card.modelName}:{card.tag}
+                  </span>
+                  <span className="text-xs px-1.5 py-0.5 rounded capitalize"
+                    style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
+                    {card.category}
+                  </span>
+                  <span className="text-xs px-1.5 py-0.5 rounded capitalize"
+                    style={{ background: `color-mix(in srgb, ${nvColor} 12%, transparent)`, color: nvColor }}>
+                    {card.novelty}
+                  </span>
+                </div>
+                {/* Why recommended */}
+                {card.whyRecommended && (
+                  <p className="text-xs leading-relaxed" style={{ color: "var(--color-muted)" }}>
+                    {card.whyRecommended.slice(0, 120)}{card.whyRecommended.length > 120 ? "…" : ""}
+                  </p>
+                )}
+                {/* VRAM + source */}
+                <div className="flex items-center gap-3 text-xs">
+                  {card.vramEstimateGb !== undefined && (
+                    <span className="flex items-center gap-1" style={{ color: vc }}>
+                      <Zap size={10} />
+                      {card.vramEstimateGb.toFixed(1)} GB VRAM
+                    </span>
+                  )}
+                  {card.sourceLabels.length > 0 && (
+                    <span style={{ color: "var(--color-muted)" }}>{card.sourceLabels.join(", ")}</span>
+                  )}
+                </div>
+                {/* Pull button */}
+                <button
+                  onClick={() => onPull(`${card.modelName}:${card.tag}`)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium mt-auto"
+                  style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)", color: "var(--color-accent)", border: "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)" }}>
+                  <Download size={11} /> Pull
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {filtered.length === 0 && (
+          <div className="text-sm text-center py-8" style={{ color: "var(--color-muted)" }}>
+            No models match the current filters.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Pull history tab ─────────────────────────────────────────────────────────
+
+function PullHistoryTab({ onRePull }: { onRePull: (name: string) => void }) {
+  const histQ = useQuery({
+    queryKey: ["model-pull-history"],
+    queryFn:  () => api.modelsExtra.pullHistory(undefined, 100),
+    staleTime: 15_000,
+  });
+
+  const entries: ModelPullHistoryEntry[] = histQ.data?.history ?? [];
+
+  function statusColor(status: string): string {
+    if (status === "success") return "var(--color-success)";
+    if (status === "failed")  return "var(--color-error)";
+    return "var(--color-warn)";
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center gap-2 px-6 py-3 shrink-0"
+        style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <History size={14} style={{ color: "var(--color-accent)" }} />
+        <span className="text-xs font-semibold" style={{ color: "var(--color-foreground)" }}>
+          Pull History
+        </span>
+        <button onClick={() => histQ.refetch()} className="ml-auto p-1 opacity-50 hover:opacity-100">
+          <RefreshCw size={12} style={{ color: "var(--color-muted)" }} />
+        </button>
+      </div>
+
+      {histQ.isLoading && (
+        <div className="flex items-center justify-center py-16" style={{ color: "var(--color-muted)" }}>
+          <Loader2 size={18} className="animate-spin mr-2" /> Loading history…
+        </div>
+      )}
+
+      {!histQ.isLoading && entries.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 gap-2">
+          <History size={24} style={{ color: "var(--color-muted)" }} />
+          <span className="text-sm" style={{ color: "var(--color-muted)" }}>
+            No pull history yet — pull a model to get started.
+          </span>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto">
+        {entries.map((e) => (
+          <div key={e.id}
+            className="flex items-center gap-3 px-6 py-3"
+            style={{ borderBottom: "1px solid var(--color-border)" }}>
+            {/* Status dot */}
+            <div className="w-2 h-2 rounded-full shrink-0"
+              style={{ background: statusColor(e.status) }} />
+
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium truncate" style={{ color: "var(--color-foreground)" }}>
+                {e.modelName}
+              </div>
+              <div className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>
+                {new Date(e.startedAt).toLocaleString()}
+                {e.completedAt && ` · ${Math.round((new Date(e.completedAt).getTime() - new Date(e.startedAt).getTime()) / 1000)}s`}
+                {e.bytes ? ` · ${(e.bytes / 1024 ** 3).toFixed(2)} GB` : ""}
+              </div>
+              {e.error && (
+                <div className="text-xs mt-0.5 truncate" style={{ color: "var(--color-error)" }}>
+                  {e.error}
+                </div>
+              )}
+            </div>
+
+            <span className="text-xs px-2 py-0.5 rounded shrink-0"
+              style={{
+                background: `color-mix(in srgb, ${statusColor(e.status)} 12%, transparent)`,
+                color: statusColor(e.status),
+              }}>
+              {e.status}
+            </span>
+
+            <button
+              onClick={() => onRePull(e.modelName)}
+              className="shrink-0 p-1.5 rounded-lg"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}
+              title="Re-pull">
+              <Download size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Models page ───────────────────────────────────────────────────────────────
 
 export default function ModelsPage() {
   const [search, setSearch] = useState("");
   const [showPull, setShowPull] = useState(false);
+  const [pullInitialName, setPullInitialName] = useState("");
   const [showProgress, setShowProgress] = useState(true);
+  const [tab, setTab] = useState<"installed" | "catalog" | "history">("installed");
   const qc = useQueryClient();
+
+  function openPull(name = "") {
+    setPullInitialName(name);
+    setShowPull(true);
+  }
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["modelList"],
@@ -332,7 +638,7 @@ export default function ModelsPage() {
             Sync
           </button>
           <button
-            onClick={() => setShowPull(true)}
+            onClick={() => openPull()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium"
             style={{ background: "var(--color-accent)", color: "#fff" }}>
             <Download size={13} />
@@ -365,85 +671,112 @@ export default function ModelsPage() {
         </div>
       )}
 
-      {/* Search */}
-      <div className="px-6 py-3 shrink-0" style={{ borderBottom: "1px solid var(--color-border)" }}>
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2"
-            style={{ color: "var(--color-muted)" }} />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search models…"
-            className="w-full pl-9 pr-4 py-2 rounded-lg text-sm outline-none"
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 px-6 pt-3 shrink-0"
+        style={{ borderBottom: "1px solid var(--color-border)" }}>
+        {(["installed", "catalog", "history"] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className="px-4 py-2 text-sm capitalize transition-colors"
             style={{
-              background: "var(--color-elevated)",
-              color: "var(--color-foreground)",
-              border: "1px solid var(--color-border)",
-            }}
-          />
-        </div>
+              color:        tab === t ? "var(--color-foreground)" : "var(--color-muted)",
+              borderBottom: tab === t ? "2px solid var(--color-accent)" : "2px solid transparent",
+              marginBottom: -1,
+              fontWeight:   tab === t ? 600 : 400,
+            }}>
+            {t}
+          </button>
+        ))}
       </div>
 
-      {/* Model list */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        {isLoading && (
-          <div className="flex items-center justify-center py-16" style={{ color: "var(--color-muted)" }}>
-            <Loader2 size={20} className="animate-spin mr-2" />
-            Loading models…
-          </div>
-        )}
-        {isError && (
-          <div className="flex flex-col items-center justify-center py-16 gap-3">
-            <AlertTriangle size={24} style={{ color: "var(--color-error)" }} />
-            <span className="text-sm" style={{ color: "var(--color-muted)" }}>
-              Failed to load models
-            </span>
-            <button onClick={() => void refetch()}
-              className="text-sm px-4 py-2 rounded-lg"
-              style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }}>
-              Retry
-            </button>
-          </div>
-        )}
-
-        {!isLoading && !isError && models.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 gap-3">
-            <Cpu size={24} style={{ color: "var(--color-muted)" }} />
-            <span className="text-sm" style={{ color: "var(--color-muted)" }}>
-              {search ? "No models match your search" : "No models installed. Pull one to get started."}
-            </span>
-          </div>
-        )}
-
-        {running.length > 0 && (
-          <section className="mb-5">
-            <div className="flex items-center gap-2 mb-2.5 text-xs font-medium"
-              style={{ color: "var(--color-success)" }}>
-              <div className="w-1.5 h-1.5 rounded-full pulse-dot" style={{ background: "var(--color-success)" }} />
-              RUNNING ({running.length})
+      {tab === "installed" && (
+        <>
+          {/* Search */}
+          <div className="px-6 py-3 shrink-0" style={{ borderBottom: "1px solid var(--color-border)" }}>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2"
+                style={{ color: "var(--color-muted)" }} />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search models…"
+                className="w-full pl-9 pr-4 py-2 rounded-lg text-sm outline-none"
+                style={{
+                  background: "var(--color-elevated)",
+                  color: "var(--color-foreground)",
+                  border: "1px solid var(--color-border)",
+                }}
+              />
             </div>
-            <div className="space-y-2">
-              {running.map(m => <ModelRow key={m.name} model={m} />)}
-            </div>
-          </section>
-        )}
+          </div>
 
-        {idle.length > 0 && (
-          <section>
-            {running.length > 0 && (
-              <div className="text-xs font-medium mb-2.5" style={{ color: "var(--color-muted)" }}>
-                INSTALLED ({idle.length})
+          {/* Model list */}
+          <div className="flex-1 overflow-y-auto px-6 py-4">
+            {isLoading && (
+              <div className="flex items-center justify-center py-16" style={{ color: "var(--color-muted)" }}>
+                <Loader2 size={20} className="animate-spin mr-2" />
+                Loading models…
               </div>
             )}
-            <div className="space-y-2">
-              {idle.map(m => <ModelRow key={m.name} model={m} />)}
-            </div>
-          </section>
-        )}
-      </div>
+            {isError && (
+              <div className="flex flex-col items-center justify-center py-16 gap-3">
+                <AlertTriangle size={24} style={{ color: "var(--color-error)" }} />
+                <span className="text-sm" style={{ color: "var(--color-muted)" }}>
+                  Failed to load models
+                </span>
+                <button onClick={() => void refetch()}
+                  className="text-sm px-4 py-2 rounded-lg"
+                  style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }}>
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {!isLoading && !isError && models.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-16 gap-3">
+                <Cpu size={24} style={{ color: "var(--color-muted)" }} />
+                <span className="text-sm" style={{ color: "var(--color-muted)" }}>
+                  {search ? "No models match your search" : "No models installed. Pull one to get started."}
+                </span>
+              </div>
+            )}
+
+            {running.length > 0 && (
+              <section className="mb-5">
+                <div className="flex items-center gap-2 mb-2.5 text-xs font-medium"
+                  style={{ color: "var(--color-success)" }}>
+                  <div className="w-1.5 h-1.5 rounded-full pulse-dot" style={{ background: "var(--color-success)" }} />
+                  RUNNING ({running.length})
+                </div>
+                <div className="space-y-2">
+                  {running.map(m => <ModelRow key={m.name} model={m} />)}
+                </div>
+              </section>
+            )}
+
+            {idle.length > 0 && (
+              <section>
+                {running.length > 0 && (
+                  <div className="text-xs font-medium mb-2.5" style={{ color: "var(--color-muted)" }}>
+                    INSTALLED ({idle.length})
+                  </div>
+                )}
+                <div className="space-y-2">
+                  {idle.map(m => <ModelRow key={m.name} model={m} />)}
+                </div>
+              </section>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "catalog" && <CatalogTab onPull={openPull} />}
+
+      {tab === "history" && <PullHistoryTab onRePull={openPull} />}
 
       {/* Pull modal */}
-      {showPull && <PullModal onClose={() => setShowPull(false)} />}
+      {showPull && <PullModal initialName={pullInitialName} onClose={() => { setShowPull(false); setPullInitialName(""); }} />}
 
       {/* Pull progress */}
       {showProgress && <PullProgress onClose={() => setShowProgress(false)} />}

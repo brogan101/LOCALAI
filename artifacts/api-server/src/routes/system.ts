@@ -12,8 +12,10 @@ import { writeManagedJson } from "../lib/snapshot-manager.js";
 import {
   invokeSystemKillSwitch, robustCleanup, readSystemIntegrationStatus,
   findWindows, focusWindow, runMacro, listMacros, registerMacro,
+  sendKeystrokes, typeText, clickAt, captureScreenshot,
   type Macro,
 } from "../lib/windows-system.js";
+import { loadSettings } from "../lib/secure-config.js";
 import {
   sovereignEdit, proposeSelfEdit, triggerServerRestart,
 } from "../lib/self-edit.js";
@@ -22,6 +24,8 @@ import {
 } from "../lib/file-execution-agent.js";
 import { taskQueue } from "../lib/task-queue.js";
 import { thoughtLog } from "../lib/thought-log.js";
+import { getOllamaUrl } from "../lib/ollama-url.js";
+import { probeHardware } from "../lib/hardware-probe.js";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -107,7 +111,7 @@ router.get("/system/diagnostics", async (_req, res) => {
   const cpuCount = os.cpus().length;
   items.push({ category: "System", label: "CPU Cores", status: "ok", value: String(cpuCount) });
   const ollamaVersion = await tryVersion("ollama --version");
-  const ollamaRunning = await httpReachable("http://127.0.0.1:11434/api/tags");
+  const ollamaRunning = await httpReachable(`${await getOllamaUrl()}/api/tags`);
   items.push({ category: "AI Stack", label: "Ollama", status: !!ollamaVersion ? (ollamaRunning ? "ok" : "warning") : "error", value: ollamaVersion || "Not installed", details: ollamaRunning ? "Running on port 11434" : ollamaVersion ? "Installed but not running" : "Not installed" });
   const webuiRunning = await httpReachable("http://127.0.0.1:8080");
   items.push({ category: "AI Stack", label: "Open WebUI", status: webuiRunning ? "ok" : "warning", value: webuiRunning ? "Running on port 8080" : "Not running" });
@@ -648,6 +652,110 @@ router.post("/system/exec/diagnose", async (req, res) => {
   try {
     const result = await diagnoseError(stderr, sourceCode, filePath);
     return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /system/hardware — probed hardware snapshot (GPU, CPU, RAM, disk, OS, Ollama)
+router.get("/system/hardware", async (_req, res) => {
+  try {
+    const snapshot = await probeHardware();
+    return res.json(snapshot);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ── OS Interop routes (gated on allowAgentExec) ───────────────────────────────
+
+async function requireAgentExec(res: import("express").Response): Promise<boolean> {
+  const settings = await loadSettings();
+  if (!settings.allowAgentExec) {
+    res.status(403).json({ success: false, message: "OS interop is disabled. Enable allowAgentExec in Settings → Agent Permissions." });
+    return false;
+  }
+  return true;
+}
+
+// GET /system/os/windows — list open windows matching optional titlePattern
+router.get("/system/os/windows", async (req, res) => {
+  if (!await requireAgentExec(res)) return;
+  const pattern = String(req.query["pattern"] || "").trim() || ".*";
+  try {
+    const windows = await findWindows(pattern);
+    return res.json({ success: true, windows });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/os/focus — focus a window by title pattern
+router.post("/system/os/focus", async (req, res) => {
+  if (!await requireAgentExec(res)) return;
+  const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+  const pattern = typeof body["pattern"] === "string" ? body["pattern"].trim() : "";
+  if (!pattern) return res.status(400).json({ success: false, message: "pattern required" });
+  try {
+    const focused = await focusWindow(pattern);
+    return res.json({ success: true, focused });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/os/send-keys — send key strokes to the focused window
+router.post("/system/os/send-keys", async (req, res) => {
+  if (!await requireAgentExec(res)) return;
+  const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+  const keys = typeof body["keys"] === "string" ? body["keys"] : "";
+  if (!keys) return res.status(400).json({ success: false, message: "keys required" });
+  try {
+    await sendKeystrokes(keys);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/os/type-text — type literal text into the focused window
+router.post("/system/os/type-text", async (req, res) => {
+  if (!await requireAgentExec(res)) return;
+  const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+  const text = typeof body["text"] === "string" ? body["text"] : "";
+  if (!text) return res.status(400).json({ success: false, message: "text required" });
+  try {
+    await typeText(text);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/os/click — click at screen coordinates
+router.post("/system/os/click", async (req, res) => {
+  if (!await requireAgentExec(res)) return;
+  const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+  const x = typeof body["x"] === "number" ? body["x"] : Number(body["x"]);
+  const y = typeof body["y"] === "number" ? body["y"] : Number(body["y"]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ success: false, message: "x and y coordinates required" });
+  try {
+    await clickAt(x, y);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /system/os/screenshot — capture primary screen, returns base64 PNG
+router.post("/system/os/screenshot", async (req, res) => {
+  if (!await requireAgentExec(res)) return;
+  try {
+    const outputPath = await captureScreenshot();
+    const { readFile } = await import("fs/promises");
+    const buf = await readFile(outputPath);
+    const base64 = buf.toString("base64");
+    return res.json({ success: true, base64, path: outputPath });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err.message });
   }

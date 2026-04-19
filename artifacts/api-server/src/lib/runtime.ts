@@ -95,7 +95,8 @@ export async function postJson<T = unknown>(
 
 export async function ollamaReachable(): Promise<boolean> {
   try {
-    await fetchJson("http://127.0.0.1:11434/api/tags", undefined, 2500);
+    const envUrl = process.env["OLLAMA_BASE_URL"]?.trim() ?? "http://127.0.0.1:11434";
+    await fetchJson(`${envUrl}/api/tags`, undefined, 2500);
     return true;
   } catch {
     return false;

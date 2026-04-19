@@ -13,6 +13,7 @@ import {
   toolsRoot,
   ensureDir,
   postJson,
+  fetchJson,
 } from "../lib/runtime.js";
 import { writeManagedJson, writeManagedFile } from "../lib/snapshot-manager.js";
 import {
@@ -25,10 +26,13 @@ import {
   runInstall,
   testEndpoint,
 } from "../lib/studio-pipeline.js";
+import { modelRolesService } from "../lib/model-roles-service.js";
+import { getOllamaUrl } from "../lib/ollama-url.js";
+import { WORKSPACE_PRESETS, getPreset } from "../config/workspace-presets.js";
+import { probeHardware } from "../lib/hardware-probe.js";
 
 const router = Router();
 const STUDIOS_DIR = path.join(os.homedir(), "LocalAI-Studios");
-const MODEL_ROLES_FILE = path.join(toolsRoot(), "model-roles.json");
 
 const GENERATION_CONSTRAINTS = [
   "Never generate an entire app in one response.",
@@ -65,13 +69,9 @@ const STUDIO_TEMPLATES = [
 const buildJobs = new Map<string, any>();
 
 async function getPreferredStudioModel(): Promise<string | null> {
-  try {
-    if (!existsSync(MODEL_ROLES_FILE)) return null;
-    const roles = JSON.parse(await readFile(MODEL_ROLES_FILE, "utf-8"));
-    return roles["primary-coding"] || roles.chat || null;
-  } catch {
-    return null;
-  }
+  return await modelRolesService.getRole("primary-coding")
+      ?? await modelRolesService.getRole("chat")
+      ?? null;
 }
 
 function slugifyStudioName(value: string): string {
@@ -267,7 +267,7 @@ async function createStudioPlan(brief: string, templateId?: string): Promise<any
       `User brief: ${brief}`,
       templateId ? `Preferred template: ${templateId}` : "",
     ].filter(Boolean).join("\n");
-    const result = await postJson<{ response?: string }>("http://127.0.0.1:11434/api/generate", { model, prompt, stream: false, format: "json" }, 35000);
+    const result = await postJson<{ response?: string }>(`${await getOllamaUrl()}/api/generate`, { model, prompt, stream: false, format: "json" }, 35000);
     const parsed = JSON.parse(result.response || "{}");
     const selectedTemplate = TEMPLATE_DEFINITIONS.has(parsed.recommendedTemplate || "") ? parsed.recommendedTemplate : fallbackTemplate;
     const manifest = buildManifestFromTemplate(parsed.summary || brief, selectedTemplate, slugifyStudioName(parsed.projectName || brief), parsed.projectName || brief, parsed.architecture, parsed.dependencies, parsed.commands);
@@ -363,7 +363,7 @@ async function reviewGeneratedFile(manifest: any, file: any, content: string, mo
         "File content:",
         content,
       ].join("\n");
-      const result = await postJson<{ response?: string }>("http://127.0.0.1:11434/api/generate", { model, prompt, stream: false, format: "json" }, 30000);
+      const result = await postJson<{ response?: string }>(`${await getOllamaUrl()}/api/generate`, { model, prompt, stream: false, format: "json" }, 30000);
       const parsed = JSON.parse(result.response || "{}");
       if (Array.isArray(parsed.issues)) issues.push(...parsed.issues.filter(Boolean));
       if (parsed.ok === false) return { ok: false, issues: uniqueStrings(issues).slice(0, 8) };
@@ -425,7 +425,7 @@ async function generateManifestFile(manifest: any, file: any): Promise<string> {
           `Architecture: ${manifest.architecture.join(" | ")}`,
           "Generate the complete file content now:",
         ].join("\n");
-        const result = await postJson<{ response?: string }>("http://127.0.0.1:11434/api/generate", { model, prompt, stream: false }, 40000);
+        const result = await postJson<{ response?: string }>(`${await getOllamaUrl()}/api/generate`, { model, prompt, stream: false }, 40000);
         const candidate = stripCodeFence(result.response || "");
         if (candidate.trim()) generated = candidate;
       } catch {}
@@ -707,6 +707,308 @@ router.post("/studios/imagegen/generate", async (req, res) => {
     saveImages:   saveImages !== false,
   });
   return res.status(result.success ? 200 : 503).json({ success: result.success, result });
+});
+
+// ── GET /studios/presets — list all presets with model availability ────────────
+
+router.get("/studios/presets", async (_req, res) => {
+  const ollamaUrl = await getOllamaUrl().catch(() => "http://localhost:11434");
+  let installedNames: string[] = [];
+  try {
+    const data = await fetchJson<{ models?: Array<{ name: string }> }>(
+      `${ollamaUrl}/api/tags`, undefined, 4000
+    );
+    installedNames = (data?.models ?? []).map((m: { name: string }) => m.name.toLowerCase());
+  } catch { /* Ollama down — all models missing */ }
+
+  const presetsWithStatus = await Promise.all(
+    WORKSPACE_PRESETS.map(async (preset) => {
+      const roleChecks = await Promise.all(
+        preset.requiredRoles.map(async (role) => {
+          const modelName = await modelRolesService.getRole(role).catch(() => null);
+          const installed = !!modelName && installedNames.some(n => n.includes(modelName.split(":")[0]));
+          return { role, modelName, installed };
+        })
+      );
+      const allRequired = roleChecks.every(r => r.installed);
+      const someRequired = roleChecks.some(r => r.installed);
+      return {
+        ...preset,
+        readiness: allRequired ? "ready" : someRequired ? "partial" : "missing",
+        roleStatus: roleChecks,
+      };
+    })
+  );
+
+  return res.json({ presets: presetsWithStatus });
+});
+
+// ── POST /studios/presets/enter — enter a workspace preset ───────────────────
+
+router.post("/studios/presets/enter", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const presetId      = typeof body.presetId      === "string" ? body.presetId.trim()      : "";
+  const workspacePath = typeof body.workspacePath === "string" ? body.workspacePath.trim() : "";
+
+  if (!presetId || !workspacePath) {
+    return res.status(400).json({ success: false, message: "presetId and workspacePath required" });
+  }
+
+  const preset = getPreset(presetId);
+  if (!preset) {
+    return res.status(404).json({ success: false, message: `Unknown preset: ${presetId}` });
+  }
+
+  // 1. Resolve required-role models
+  const roleModels: Array<{ role: string; modelName: string | null }> = await Promise.all(
+    preset.requiredRoles.map(async (role) => ({
+      role,
+      modelName: await modelRolesService.getRole(role).catch(() => null),
+    }))
+  );
+
+  // 2. VRAM preflight
+  const hw = await probeHardware().catch(() => null);
+  if (hw) {
+    const { USER_STACK } = await import("../config/models.config.js");
+    const requiredVram = preset.requiredRoles.reduce((sum, role) => {
+      const spec = USER_STACK.find(s => s.role === role);
+      return sum + (spec?.vramBytes ?? 0);
+    }, 0);
+
+    if (requiredVram > 0 && hw.gpu.freeVramBytes > 0 && requiredVram > hw.gpu.freeVramBytes * 1.1) {
+      const fmt = (b: number) => `${(b / 1024 ** 3).toFixed(1)} GB`;
+      return res.status(422).json({
+        success: false,
+        message: `VRAM over budget: preset needs ~${fmt(requiredVram)}, only ${fmt(hw.gpu.freeVramBytes)} free`,
+        suggestion: "Unload running models via Kill Switch, then retry.",
+        requiredVram,
+        freeVram: hw.gpu.freeVramBytes,
+      });
+    }
+  }
+
+  // 3. Create workspacePath directory if it doesn't exist
+  try {
+    await ensureDir(workspacePath);
+  } catch (e) {
+    return res.status(500).json({ success: false, message: `Cannot create directory: ${String(e)}` });
+  }
+
+  // 4. Preload primary role model (keep_alive 30m)
+  const primaryRole = preset.requiredRoles[0];
+  const primaryModel = roleModels.find(r => r.role === primaryRole)?.modelName ?? null;
+  if (primaryModel) {
+    const ollamaUrl = await getOllamaUrl().catch(() => "http://localhost:11434");
+    try {
+      await postJson(`${ollamaUrl}/api/generate`, {
+        model:      primaryModel,
+        prompt:     "",
+        keep_alive: "30m",
+      });
+    } catch { /* Ollama down or model not pulled — non-fatal */ }
+  }
+
+  // 5. Register workspace project if not already registered
+  try {
+    const { readFile: rf, writeFile: wf } = await import("fs/promises");
+    const projectsFile = path.join(toolsRoot(), "workspace-projects.json");
+    let projects: Array<{ id: string; path: string; name: string }> = [];
+    try {
+      projects = JSON.parse(await rf(projectsFile, "utf-8")) as typeof projects;
+    } catch { /* fresh start */ }
+    const already = projects.some(p => p.path === workspacePath);
+    if (!already) {
+      const { randomUUID: uuid } = await import("crypto");
+      projects.push({ id: uuid(), path: workspacePath, name: preset.name });
+      await wf(projectsFile, JSON.stringify(projects, null, 2), "utf-8");
+    }
+  } catch { /* non-fatal */ }
+
+  // 6. Write preferred role assignments (Step 4.6)
+  // Only assign roles where the model is actually installed in Ollama
+  if (preset.preferredRoleAssignments) {
+    try {
+      const ollamaUrl = await getOllamaUrl().catch(() => "http://localhost:11434");
+      const tagsRes = await fetchJson<{ models: Array<{ name: string }> }>(
+        `${ollamaUrl}/api/tags`
+      ).catch(() => ({ models: [] as Array<{ name: string }> }));
+      const installedNames = new Set(
+        (tagsRes.models ?? []).map((m) => m.name.split(":")[0])
+      );
+
+      for (const [role, modelName] of Object.entries(preset.preferredRoleAssignments)) {
+        if (!modelName) continue;
+        // Check if model base name is installed (ignore :tag suffix for matching)
+        const baseName = modelName.split(":")[0];
+        if (installedNames.has(baseName) || installedNames.has(modelName)) {
+          await modelRolesService.setRole(role as import("../config/models.config.js").ModelRole, modelName).catch(() => {/* non-fatal */});
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  const sessionId = randomUUID();
+  return res.status(200).json({
+    success:      true,
+    sessionId,
+    presetId,
+    redirectPath: `/chat?preset=${presetId}&workspace=${encodeURIComponent(workspacePath)}`,
+    preset: {
+      id:             preset.id,
+      name:           preset.name,
+      systemPrompt:   preset.systemPrompt,
+      startingLayout: preset.startingLayout,
+      toolset:        preset.toolset,
+    },
+    roleModels,
+  });
+});
+
+// ── POST /studios/cad/render — run OpenSCAD and return base64 PNG ─────────────
+
+router.post("/studios/cad/render", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const scadScript = typeof body.scadScript === "string" ? body.scadScript : "";
+
+  if (!scadScript.trim()) {
+    return res.status(400).json({ success: false, message: "scadScript is required" });
+  }
+
+  // Check if OpenSCAD is installed
+  const hasOpenSCAD = await commandExists("openscad");
+  if (!hasOpenSCAD) {
+    return res.status(422).json({
+      success: false,
+      message: "OpenSCAD is not installed",
+      installHint: isWindows
+        ? "winget install OpenSCAD.OpenSCAD"
+        : "sudo apt install openscad  OR  brew install openscad",
+    });
+  }
+
+  // Write temp .scad file
+  const tmpDir = path.join(os.tmpdir(), "localai-cad");
+  await ensureDir(tmpDir);
+  const scadFile = path.join(tmpDir, `render-${randomUUID()}.scad`);
+  const outPng   = scadFile.replace(/\.scad$/, ".png");
+
+  try {
+    await writeFile(scadFile, scadScript, "utf-8");
+
+    // Run openscad
+    const { execFile: cpExec } = await import("child_process");
+    const { promisify }        = await import("util");
+    const execFileAsync        = promisify(cpExec);
+
+    await execFileAsync("openscad", [
+      "-o", outPng,
+      "--imgsize=800,600",
+      "--colorscheme=BeforeDawn",
+      scadFile,
+    ], { timeout: 30_000 });
+
+    if (!existsSync(outPng)) {
+      return res.status(500).json({ success: false, message: "OpenSCAD produced no output" });
+    }
+
+    const pngBuf  = await readFile(outPng);
+    const base64  = pngBuf.toString("base64");
+    return res.json({ success: true, base64Png: base64, mimeType: "image/png" });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return res.status(500).json({ success: false, message: `OpenSCAD render failed: ${msg}` });
+  } finally {
+    // Clean up temp files (non-fatal)
+    const { unlink } = await import("fs/promises");
+    await Promise.all([
+      unlink(scadFile).catch(() => {}),
+      unlink(outPng).catch(() => {}),
+    ]);
+  }
+});
+
+// ── GET /studios/imagegen/gallery — list PNG files in IMAGEGEN_DIR ───────────
+
+router.get("/studios/imagegen/gallery", async (_req, res) => {
+  const { readdir, stat } = await import("fs/promises");
+  const IMAGEGEN_DIR_PATH = path.join(toolsRoot(), "studio-pipeline", "imagegen");
+
+  try {
+    await ensureDir(IMAGEGEN_DIR_PATH);
+    const entries = await readdir(IMAGEGEN_DIR_PATH);
+    const pngFiles = entries.filter((f) => f.toLowerCase().endsWith(".png"));
+
+    const withStats = await Promise.all(
+      pngFiles.map(async (name) => {
+        const fullPath = path.join(IMAGEGEN_DIR_PATH, name);
+        const s = await stat(fullPath).catch(() => null);
+        return {
+          name,
+          path:  fullPath,
+          mtime: s ? s.mtimeMs : 0,
+        };
+      })
+    );
+
+    // Sort newest first
+    withStats.sort((a, b) => b.mtime - a.mtime);
+    return res.json({ success: true, files: withStats });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return res.status(500).json({ success: false, message: msg, files: [] });
+  }
+});
+
+// ── POST /studios/coding/write-continue-config — write .continue/config.json ─
+
+router.post("/studios/coding/write-continue-config", async (req, res) => {
+  const body          = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const workspacePath = typeof body.workspacePath === "string" ? body.workspacePath.trim() : "";
+  const modelName     = typeof body.modelName     === "string" ? body.modelName.trim()     : "";
+
+  if (!workspacePath || !modelName) {
+    return res.status(400).json({ success: false, message: "workspacePath and modelName required" });
+  }
+
+  const continueDir    = path.join(workspacePath, ".continue");
+  const continueConfig = path.join(continueDir, "config.json");
+
+  const config = {
+    models: [
+      {
+        title:    "LocalAI (Ollama)",
+        provider: "ollama",
+        model:    modelName,
+        apiBase:  "http://localhost:11434",
+      },
+    ],
+    tabAutocompleteModel: {
+      title:    "Autocomplete (Ollama)",
+      provider: "ollama",
+      model:    modelName,
+      apiBase:  "http://localhost:11434",
+    },
+    allowAnonymousTelemetry: false,
+  };
+
+  try {
+    await ensureDir(continueDir);
+    await writeFile(continueConfig, JSON.stringify(config, null, 2), "utf-8");
+
+    // Spawn VS Code with the workspace (non-blocking, non-fatal)
+    const { spawn } = await import("child_process");
+    spawn("code", [workspacePath], {
+      detached: true,
+      stdio:    "ignore",
+      shell:    isWindows,
+    }).unref();
+
+    return res.json({ success: true, configPath: continueConfig });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return res.status(500).json({ success: false, message: msg });
+  }
 });
 
 router.get("/studios/integrations", async (_req, res) => {

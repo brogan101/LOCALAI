@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
-import { Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2, Code2, AlertCircle } from "lucide-react";
-import api, { type AppSettings, type ContinueRule } from "../api.js";
+import { Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2, Code2, AlertCircle, DollarSign } from "lucide-react";
+import api, { type AppSettings, type ContinueRule, type LifetimeUsage } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -263,9 +263,105 @@ export default function SettingsPage() {
         </SettingRow>
       </Card>
 
+      {/* Agent Permissions */}
+      <Card>
+        <SectionHeader title="Agent Permissions" />
+        <SettingRow label="Allow agent file edits" description="Agent can apply proposed file edits via sovereignEdit">
+          <Toggle value={s.allowAgentEdits ?? true} onChange={(v) => update("allowAgentEdits", v)} />
+        </SettingRow>
+        <SettingRow label="Allow agent command execution" description="Agent can run shell commands (opt-in, use with caution)">
+          <Toggle value={s.allowAgentExec ?? false} onChange={(v) => update("allowAgentExec", v)} />
+        </SettingRow>
+        <SettingRow label="Allow agent self-heal" description="Agent can run scripts and auto-fix errors in a loop">
+          <Toggle value={s.allowAgentSelfHeal ?? true} onChange={(v) => update("allowAgentSelfHeal", v)} />
+        </SettingRow>
+        <SettingRow label="Allow agent refactors" description="Agent can plan and execute multi-file refactors">
+          <Toggle value={s.allowAgentRefactor ?? true} onChange={(v) => update("allowAgentRefactor", v)} />
+        </SettingRow>
+        <SettingRow label="Require action confirmation" description="Every Approve button requires explicit click — cannot be bypassed">
+          <Toggle value={s.requireActionConfirmation ?? true} onChange={(v) => update("requireActionConfirmation", v)} />
+        </SettingRow>
+      </Card>
+
       <UsageSection />
+      <LifetimeCostCard />
       <ContinueRulesSection />
     </div>
+  );
+}
+
+// ── Lifetime cost-saved counter (Step 5.6) ────────────────────────────────────
+
+function LifetimeCostCard() {
+  const lifetimeQ = useQuery({
+    queryKey: ["usage-lifetime"],
+    queryFn:  () => api.usage.lifetime(),
+    staleTime: 60_000,
+  });
+
+  const data = lifetimeQ.data as LifetimeUsage | undefined;
+
+  function fmt(n: number): string {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+    if (n >= 1_000)     return (n / 1_000).toFixed(1) + "K";
+    return n.toString();
+  }
+
+  return (
+    <Card>
+      <SectionHeader title="Lifetime Local Savings" />
+      <div className="p-4">
+        {lifetimeQ.isLoading && (
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+            <RefreshCw size={11} className="inline animate-spin mr-1" />Loading…
+          </div>
+        )}
+        {data && data.success && (
+          <div className="space-y-3">
+            {/* Big number */}
+            <div className="flex items-center gap-3 p-4 rounded-xl"
+              style={{ background: "color-mix(in srgb, var(--color-success) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--color-success) 20%, transparent)" }}>
+              <DollarSign size={24} style={{ color: "var(--color-success)", flexShrink: 0 }} />
+              <div>
+                <div className="text-2xl font-bold" style={{ color: "var(--color-success)" }}>
+                  ${data.costEstimateUsd.toFixed(2)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>
+                  estimated savings vs. {data.pricing.model} API rates
+                  {data.firstDate ? ` since ${data.firstDate}` : ""}
+                </div>
+              </div>
+            </div>
+
+            {/* Token breakdown */}
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: "Total tokens", value: fmt(data.totalTokens) },
+                { label: "Input tokens",  value: fmt(data.totalTokensIn) },
+                { label: "Output tokens", value: fmt(data.totalTokensOut) },
+              ].map(({ label, value }) => (
+                <div key={label} className="rounded-lg p-3 text-center"
+                  style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+                  <div className="text-xs mb-0.5" style={{ color: "var(--color-muted)" }}>{label}</div>
+                  <div className="font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="text-xs p-2.5 rounded-lg"
+              style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+              Pricing: ${data.pricing.inputPer1M}/1M input · ${data.pricing.outputPer1M}/1M output
+              ({data.pricing.model})
+            </div>
+          </div>
+        )}
+        {lifetimeQ.isError && (
+          <div className="text-xs" style={{ color: "var(--color-error)" }}>
+            Could not load lifetime stats
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 

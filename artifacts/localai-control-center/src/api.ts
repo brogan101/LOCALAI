@@ -313,6 +313,12 @@ export interface AppSettings {
   notificationsEnabled: boolean;
   modelDownloadPath: string;
   preferredInstallMethod: string;
+  // Agent permissions
+  allowAgentEdits:           boolean;
+  allowAgentExec:            boolean;
+  allowAgentSelfHeal:        boolean;
+  allowAgentRefactor:        boolean;
+  requireActionConfirmation: boolean;
 }
 
 export const system = {
@@ -440,6 +446,56 @@ export interface VibeCodingTestResult {
 
 // ── Studios ───────────────────────────────────────────────────────────────────
 
+// ── Workspace Preset types (mirrors workspace-presets.ts) ─────────────────────
+
+export type StartingLayout =
+  | "split-editor-chat"
+  | "single-chat"
+  | "canvas-chat"
+  | "gallery-chat";
+
+export interface PresetToolset {
+  rag:        boolean;
+  vision:     boolean;
+  fileExec:   boolean;
+  webSearch:  boolean;
+  osInterop:  boolean;
+  gcode:      boolean;
+  openscad:   boolean;
+  comfyui:    boolean;
+}
+
+export interface WorkspacePreset {
+  id:                           string;
+  name:                         string;
+  description:                  string;
+  icon:                         string;
+  requiredRoles:                string[];
+  optionalRoles:                string[];
+  toolset:                      PresetToolset;
+  systemPrompt:                 string;
+  startingLayout:               StartingLayout;
+  defaultWorkspacePathTemplate: string;
+  /** Added by server: 'ready' | 'partial' | 'missing' */
+  readiness?:  string;
+  roleStatus?: Array<{ role: string; modelName: string | null; installed: boolean }>;
+}
+
+export interface PresetEnterResult {
+  success:      boolean;
+  sessionId:    string;
+  presetId:     string;
+  redirectPath: string;
+  preset: {
+    id:             string;
+    name:           string;
+    systemPrompt:   string;
+    startingLayout: StartingLayout;
+    toolset:        PresetToolset;
+  };
+  roleModels: Array<{ role: string; modelName: string | null }>;
+}
+
 export const studios = {
   templates:    () => get<{ templates: unknown[] }>("/studios/templates"),
   catalog:      () => get<{ workspaces: unknown[]; parameterBlocks: unknown[] }>("/studios/catalog"),
@@ -450,6 +506,13 @@ export const studios = {
   buildStatus:  (jobId: string) =>
     get<{ success: boolean; job: unknown }>(`/studios/build/${encodeURIComponent(jobId)}`),
   integrations: () => get<{ repos: unknown[] }>("/studios/integrations"),
+
+  // ── Workspace Presets ──────────────────────────────────────────────────────
+  presets: {
+    list:  () => get<{ presets: WorkspacePreset[] }>("/studios/presets"),
+    enter: (presetId: string, workspacePath: string) =>
+      post<PresetEnterResult>("/studios/presets/enter", { presetId, workspacePath }),
+  },
 
   // ── Vibe Coding ────────────────────────────────────────────────────────────
   vibeCheck: (studioPath: string, port?: number, endpointPath?: string, startCommand?: string) =>
@@ -465,6 +528,18 @@ export const studios = {
       post<{ success: boolean; result: CadScriptResult }>("/studios/cad/blender", { description, save }),
     gcode: (gcode: string, printerType: "fdm" | "laser" = "fdm", save = true) =>
       post<{ success: boolean; result: GCodeOptimizeResult }>("/studios/cad/gcode", { gcode, printerType, save }),
+    render: (scadScript: string) =>
+      post<{ success: boolean; base64Png?: string; mimeType?: string; message?: string; installHint?: string }>(
+        "/studios/cad/render", { scadScript }
+      ),
+  },
+
+  // ── Coding ─────────────────────────────────────────────────────────────────
+  coding: {
+    writeContinueConfig: (workspacePath: string, modelName: string) =>
+      post<{ success: boolean; configPath?: string; message?: string }>(
+        "/studios/coding/write-continue-config", { workspacePath, modelName }
+      ),
   },
 
   // ── Image Generation ───────────────────────────────────────────────────────
@@ -472,6 +547,10 @@ export const studios = {
     status: () => get<ImageGenStatus>("/studios/imagegen/status"),
     expandPrompt: (prompt: string, style?: PromptArchitectResult["style"]) =>
       post<{ success: boolean; result: PromptArchitectResult }>("/studios/imagegen/expand-prompt", { prompt, style }),
+    gallery: () =>
+      get<{ success: boolean; files: Array<{ name: string; path: string; mtime: number }> }>(
+        "/studios/imagegen/gallery"
+      ),
     generate: (
       prompt: string,
       options?: {
@@ -490,11 +569,29 @@ export const studios = {
 
 // ── Models (additional endpoints) ────────────────────────────────────────────
 
+export interface DiscoveredModelCard {
+  spec:                string;
+  modelName:           string;
+  tag:                 string;
+  category:            string;
+  novelty:             "recommended" | "fresh" | "trending" | "abliterated";
+  whyRecommended:      string;
+  hardwareRequirement: string;
+  vramEstimateGb?:     number;
+  verificationSource:  string;
+  sourceLabels:        string[];
+  discoveredAt:        string;
+}
+
 // These extend the `models` namespace above with unwrapped backend routes.
 export const modelsExtra = {
-  discover:      () => get<{ cards: unknown[]; discoveredAt: string }>("/models/discover"),
+  discover:      () => get<{ cards: DiscoveredModelCard[]; discoveredAt: string }>("/models/discover"),
   verify:        (modelName: string) =>
     get<{ success: boolean; verification: unknown }>(`/models/verify?modelName=${encodeURIComponent(modelName)}`),
+  pullHistory:   (model?: string, limit?: number) =>
+    get<{ success: boolean; history: ModelPullHistoryEntry[] }>(
+      `/models/pull-history?limit=${limit ?? 50}${model ? `&model=${encodeURIComponent(model)}` : ""}`
+    ),
   recommend:     (prompt: string) =>
     post<{ recommendation: unknown; installed: string[] }>("/models/recommend", { prompt }),
   verifyInstall: (modelName: string) =>
@@ -925,13 +1022,22 @@ export const repair = {
 
 // ── Rollback ──────────────────────────────────────────────────────────────────
 
+export interface BackupEntry {
+  filePath:   string;
+  backupPath: string;
+  createdAt:  string;
+  sizeBytes?: number;
+}
+
 export const rollback = {
-  getBackup:   (filePath: string) =>
-    get<{ backup: unknown }>(`/rollback/backup?filePath=${encodeURIComponent(filePath)}`),
-  listBackups: (directoryPath: string) =>
-    get<{ backups: unknown[] }>(`/rollback/backups?directoryPath=${encodeURIComponent(directoryPath)}`),
-  rollback:    (filePath: string) =>
-    post<{ success: boolean; backup: unknown }>("/rollback", { filePath }),
+  getBackup:    (filePath: string) =>
+    get<{ backup: BackupEntry | null }>(`/rollback/backup?filePath=${encodeURIComponent(filePath)}`),
+  listBackups:  (directoryPath: string) =>
+    get<{ backups: BackupEntry[] }>(`/rollback/backups?directoryPath=${encodeURIComponent(directoryPath)}`),
+  rollback:     (filePath: string) =>
+    post<{ success: boolean; backup: BackupEntry }>("/rollback", { filePath }),
+  scanBackups:  (workspacePath: string) =>
+    get<{ backups: BackupEntry[] }>(`/rollback/scan?workspacePath=${encodeURIComponent(workspacePath)}`),
 };
 
 // ── Updater ───────────────────────────────────────────────────────────────────
@@ -969,14 +1075,58 @@ export interface UsageRecord {
   sessionId?: string;
 }
 
+export interface LifetimeUsage {
+  success:         boolean;
+  totalTokensIn:   number;
+  totalTokensOut:  number;
+  totalTokens:     number;
+  costEstimateUsd: number;
+  firstDate:       string | null;
+  pricing: { inputPer1M: number; outputPer1M: number; model: string };
+}
+
+export interface ModelPullHistoryEntry {
+  id:          string;
+  modelName:   string;
+  startedAt:   string;
+  completedAt: string | null;
+  bytes:       number | null;
+  status:      string;
+  error:       string | null;
+}
+
+export interface AuditEntry {
+  id:            string;
+  timestamp:     string;
+  action:        string;
+  filePath:      string | null;
+  oldHash:       string | null;
+  newHash:       string | null;
+  userConfirmed: boolean | null;
+  result:        string | null;
+  backupPath:    string | null;
+}
+
 export const usage = {
-  record:  (entry: UsageRecord) => post<{ success: boolean }>("/usage/record", entry),
-  today:   () => get<unknown>("/usage/today"),
-  history: (days?: number) =>
+  record:   (entry: UsageRecord) => post<{ success: boolean }>("/usage/record", entry),
+  today:    () => get<unknown>("/usage/today"),
+  history:  (days?: number) =>
     get<unknown>(`/usage/history${days !== undefined ? `?days=${days}` : ""}`),
-  estimate:() => get<unknown>("/usage/estimate"),
-  purge:   (before?: string) =>
+  estimate: () => get<unknown>("/usage/estimate"),
+  lifetime: () => get<LifetimeUsage>("/usage/lifetime"),
+  purge:    (before?: string) =>
     del<{ success: boolean; removed: number }>(`/usage/purge${before ? `?before=${encodeURIComponent(before)}` : ""}`),
+};
+
+export const audit = {
+  history:            (limit?: number, types?: string) =>
+    get<{ success: boolean; entries: AuditEntry[]; total: number }>(
+      `/audit/history?limit=${limit ?? 100}${types ? `&types=${encodeURIComponent(types)}` : ""}`
+    ),
+  rollbackCandidates: () =>
+    get<{ success: boolean; candidates: Array<{ id: string; timestamp: string; action: string; filePath: string | null; backupPath: string | null }> }>(
+      "/audit/rollback-candidates"
+    ),
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -986,9 +1136,130 @@ export const settings = {
   set: (data: Partial<AppSettings>) => put<{ success: boolean; settings: AppSettings }>("/settings", data),
 };
 
+// ── Hardware probe ────────────────────────────────────────────────────────────
+
+export interface HardwareGpu {
+  name:           string;
+  driver?:        string;
+  totalVramBytes: number;
+  freeVramBytes:  number;
+  probedVia:      "nvidia-smi" | "wmic" | "safe-mode";
+}
+
+export interface HardwareCpu {
+  model:         string;
+  physicalCores: number;
+  logicalCores:  number;
+  speedMhz:      number;
+}
+
+export interface HardwareRam {
+  totalBytes: number;
+  freeBytes:  number;
+}
+
+export interface HardwareDisk {
+  installDriveFreeBytes:  number;
+  installDriveTotalBytes: number;
+}
+
+export interface HardwareOs {
+  platform: string;
+  release:  string;
+  build?:   string;
+  arch:     string;
+}
+
+export interface HardwareOllama {
+  reachable: boolean;
+  url:       string;
+}
+
+export interface HardwareSnapshot {
+  gpu:      HardwareGpu;
+  cpu:      HardwareCpu;
+  ram:      HardwareRam;
+  disk:     HardwareDisk;
+  os:       HardwareOs;
+  ollama:   HardwareOllama;
+  probedAt: string;
+}
+
+export const hardware = {
+  probe: () => get<HardwareSnapshot>("/system/hardware"),
+};
+
+// ── OS Interop ────────────────────────────────────────────────────────────────
+
+export interface OsWindow {
+  title: string;
+  handle?: number;
+  processName?: string;
+}
+
+export const os = {
+  windows:    (pattern?: string) =>
+    get<{ success: boolean; windows: OsWindow[] }>(`/system/os/windows${pattern ? `?pattern=${encodeURIComponent(pattern)}` : ""}`),
+  focus:      (pattern: string) =>
+    post<{ success: boolean; focused: boolean }>("/system/os/focus", { pattern }),
+  sendKeys:   (keys: string) =>
+    post<{ success: boolean }>("/system/os/send-keys", { keys }),
+  typeText:   (text: string) =>
+    post<{ success: boolean }>("/system/os/type-text", { text }),
+  click:      (x: number, y: number) =>
+    post<{ success: boolean }>("/system/os/click", { x, y }),
+  screenshot: () =>
+    post<{ success: boolean; base64: string; path: string }>("/system/os/screenshot"),
+};
+
+// ── Chat Sessions ─────────────────────────────────────────────────────────────
+
+export interface ChatSession {
+  id:            string;
+  name:          string;
+  workspacePath: string | null;
+  createdAt:     string;
+  updatedAt:     string;
+  preview?:      { role: string; content: string } | null;
+}
+
+export interface StoredMessage {
+  id:             string;
+  sessionId:      string;
+  role:           "system" | "user" | "assistant";
+  content:        string;
+  imagesJson:     string | null;
+  supervisorJson: string | null;
+  contextJson:    string | null;
+  createdAt:      string;
+}
+
+export const sessions = {
+  list:    () =>
+    get<{ sessions: ChatSession[] }>("/chat/sessions"),
+  get:     (id: string) =>
+    get<{ session: ChatSession; messages: StoredMessage[] }>(`/chat/sessions/${encodeURIComponent(id)}`),
+  create:  (name?: string, workspacePath?: string) =>
+    post<{ session: ChatSession }>("/chat/sessions", { name, workspacePath }),
+  rename:  (id: string, name: string) =>
+    fetch(`/api/chat/sessions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }).then(r => r.json() as Promise<{ session: ChatSession }>),
+  delete:  (id: string) =>
+    fetch(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .then(r => r.json() as Promise<{ success: boolean }>),
+  branch:  (id: string, messageId: string) =>
+    post<{ session: ChatSession }>(`/chat/sessions/${encodeURIComponent(id)}/branch`, { messageId }),
+  addMessage: (id: string, role: string, content: string, extras?: { imagesJson?: string; supervisorJson?: string; contextJson?: string }) =>
+    post<{ success: boolean; id: string }>(`/chat/sessions/${encodeURIComponent(id)}/messages`, { role, content, ...extras }),
+};
+
 export default {
   health, kernel, models, modelsExtra, chat, observability, tasks,
   system, systemExtra, workspace, workspaceExtra,
   studios, integrations, remote, continueApi, context, intelligence,
-  filebrowser, stack, repair, rollback, updater, usage, settings,
+  filebrowser, stack, repair, rollback, updater, usage, audit, settings,
+  hardware, os, sessions,
 };

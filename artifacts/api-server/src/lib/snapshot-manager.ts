@@ -8,9 +8,59 @@ import {
 } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
+import { createHash } from "crypto";
+import { randomUUID } from "crypto";
 import { isWindows, execCommand, shellQuote } from "./runtime.js";
 import { logger } from "./logger.js";
 import { thoughtLog } from "./thought-log.js";
+
+// ── Audit log write-through (lazy DB import avoids circular deps) ─────────────
+
+async function writeAuditEntry(entry: {
+  action:        string;
+  filePath?:     string;
+  oldHash?:      string;
+  newHash?:      string;
+  userConfirmed?: boolean;
+  result:        string;
+  backupPath?:   string;
+}): Promise<void> {
+  try {
+    const { sqlite } = await import("../db/database.js");
+    sqlite.prepare(`
+      INSERT OR IGNORE INTO audit_log
+        (id, timestamp, action, file_path, old_hash, new_hash,
+         user_confirmed, result, backup_path)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(
+      randomUUID(),
+      new Date().toISOString(),
+      entry.action,
+      entry.filePath ?? null,
+      entry.oldHash ?? null,
+      entry.newHash ?? null,
+      entry.userConfirmed !== undefined ? (entry.userConfirmed ? 1 : 0) : null,
+      entry.result,
+      entry.backupPath ?? null,
+    );
+  } catch { /* DB not ready yet — non-fatal */ }
+}
+
+function hashFile(content: string | Buffer): string {
+  return createHash("sha256")
+    .update(typeof content === "string" ? content : content)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+async function readFileHash(filePath: string): Promise<string | undefined> {
+  try {
+    const buf = await readFile(filePath);
+    return hashFile(buf);
+  } catch {
+    return undefined;
+  }
+}
 
 export interface BackupMetadata {
   filePath: string;
@@ -100,9 +150,11 @@ export async function writeManagedFile(
   content: string | Buffer,
   options: WriteManagedOptions = {},
 ): Promise<BackupMetadata> {
-  const encoding = options.encoding ?? "utf-8";
+  const encoding    = options.encoding ?? "utf-8";
   const shouldBackup = options.backup !== false;
   await mkdir(path.dirname(filePath), { recursive: true });
+
+  const oldHash = await readFileHash(filePath);
   let backupMetadata = await getBackupMetadata(filePath);
   if (shouldBackup && existsSync(filePath) && !isBackupArtifact(filePath)) {
     backupMetadata = await createBackupIfExists(filePath);
@@ -112,6 +164,17 @@ export async function writeManagedFile(
   } else {
     await writeFile(filePath, content);
   }
+  const newHash = hashFile(content);
+
+  void writeAuditEntry({
+    action:     "edit",
+    filePath,
+    oldHash,
+    newHash,
+    result:     "success",
+    backupPath: backupMetadata.exists ? backupMetadata.backupPath : undefined,
+  });
+
   return backupMetadata;
 }
 
@@ -140,6 +203,7 @@ export async function rollbackFile(filePath: string): Promise<BackupMetadata> {
   if (!metadata.exists) {
     throw new Error(`No backup exists for ${filePath}`);
   }
+  const oldHash = await readFileHash(filePath);
   let currentPath: string | undefined;
   if (existsSync(filePath)) {
     currentPath = `${metadata.backupPath}.current`;
@@ -147,6 +211,7 @@ export async function rollbackFile(filePath: string): Promise<BackupMetadata> {
   }
   await mkdir(path.dirname(filePath), { recursive: true });
   await copyFile(metadata.backupPath, filePath);
+  const newHash = await readFileHash(filePath);
   logger.warn(
     { filePath, backupPath: metadata.backupPath },
     "Rolled back file from backup",
@@ -157,6 +222,14 @@ export async function rollbackFile(filePath: string): Promise<BackupMetadata> {
     title: "Rollback Applied",
     message: `Restored ${path.basename(filePath)} from snapshot backup`,
     metadata: { filePath, backupPath: metadata.backupPath, currentPath },
+  });
+  void writeAuditEntry({
+    action:     "rollback",
+    filePath,
+    oldHash,
+    newHash,
+    result:     "success",
+    backupPath: metadata.backupPath,
   });
   return { ...metadata, currentPath };
 }

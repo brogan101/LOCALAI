@@ -10,6 +10,10 @@ import { loadSettings } from "./secure-config.js";
 import { workspaceContextService } from "./code-context.js";
 import { logger } from "./logger.js";
 import type { WorkspaceIndex, IndexedFile } from "./code-context.js";
+import {
+  DEFAULT_CODING_FALLBACK,
+  CODING_FALLBACK_SEARCH_ORDER,
+} from "../config/models.config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,7 +90,6 @@ function tokenize(text: string): string[] {
 // ---------------------------------------------------------------------------
 
 async function loadPreferredCodingModel(): Promise<string> {
-  const fallback = "qwen2.5-coder:7b";
   try {
     const settings = await loadSettings();
     const s = settings as unknown as Record<string, unknown>;
@@ -96,18 +99,21 @@ async function loadPreferredCodingModel(): Promise<string> {
     }
   } catch { /* ignore */ }
   try {
+    const { getOllamaUrl } = await import("./ollama-url.js");
+    const base = await getOllamaUrl();
     const response = await fetchJson<{ models?: Array<{ name: string }> }>(
-      "http://127.0.0.1:11434/api/tags", undefined, 4000,
+      `${base}/api/tags`, undefined, 4000,
     );
     const installed = (response.models ?? []).map(m => m.name);
     return (
-      installed.find(name => name.startsWith("qwen3-coder"))    ||
-      installed.find(name => name.startsWith("qwen2.5-coder")) ||
-      installed[0]                                               ||
-      fallback
+      CODING_FALLBACK_SEARCH_ORDER
+        .map(prefix => installed.find(name => name.startsWith(prefix)))
+        .find(Boolean)                                                     ??
+      installed[0]                                                          ??
+      DEFAULT_CODING_FALLBACK
     );
   } catch {
-    return fallback;
+    return DEFAULT_CODING_FALLBACK;
   }
 }
 
@@ -356,8 +362,10 @@ async function generateUpdatedFileContent(
     target.content,
   ].join("\n");
 
+  const { getOllamaUrl } = await import("./ollama-url.js");
+  const _ollamaBase = await getOllamaUrl();
   const response = await fetchJson<{ message?: { content?: string } }>(
-    "http://127.0.0.1:11434/api/chat",
+    `${_ollamaBase}/api/chat`,
     {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
