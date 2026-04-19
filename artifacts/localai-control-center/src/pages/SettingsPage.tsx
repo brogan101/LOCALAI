@@ -575,7 +575,9 @@ function UsageSection() {
   type TodayData = { date?: string; totalTokens?: number; promptTokens?: number; completionTokens?: number; requests?: number; byModel?: Record<string, unknown> };
 
   const today = todayQ.data as TodayData | null;
-  const history = (historyQ.data as { days?: UsageDay[] } | null)?.days ?? [];
+  const history = Array.isArray((historyQ.data as { history?: UsageDay[] } | null)?.history)
+    ? (historyQ.data as { history: UsageDay[] }).history
+    : [];
   const avgDailyTokens = history.length > 0
     ? Math.round(history.reduce((sum, d) => sum + (d.totalTokens ?? 0), 0) / history.length)
     : null;

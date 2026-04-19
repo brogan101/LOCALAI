@@ -699,12 +699,12 @@ function TokenSparkline() {
   } | undefined;
 
   const history = histQ.data as {
-    days?: Array<{ date: string; totalTokens: number }>;
+    history?: Array<{ date: string; totalTokens: number }>;
   } | undefined;
 
   const totalToday = today?.totalTokens ?? 0;
   const warnHit = today?.warnHit ?? false;
-  const days = history?.days ?? [];
+  const days = Array.isArray(history?.history) ? history.history : [];
 
   // Build sparkline bars — last 7 days
   const maxTokens = Math.max(...days.map(d => d.totalTokens), 1);
