@@ -133,6 +133,15 @@ export function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
       ON audit_log(timestamp DESC);
 
+    CREATE INDEX IF NOT EXISTS idx_audit_log_file_path
+      ON audit_log(file_path);
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created
+      ON chat_messages(session_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_thought_log_category
+      ON thought_log(category, timestamp DESC);
+
     CREATE TABLE IF NOT EXISTS refactor_plans (
       id                  TEXT PRIMARY KEY,
       workspace_path      TEXT NOT NULL,

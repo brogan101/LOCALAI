@@ -313,12 +313,24 @@ export interface AppSettings {
   notificationsEnabled: boolean;
   modelDownloadPath: string;
   preferredInstallMethod: string;
+  autoUpdateCheck: boolean;
+  updateCheckInterval: number;
+  backupBeforeUpdate: boolean;
+  maxConcurrentModels: number;
+  vramAlertThreshold: number;
+  sidebarCollapsed: boolean;
   // Agent permissions
   allowAgentEdits:           boolean;
   allowAgentExec:            boolean;
   allowAgentSelfHeal:        boolean;
   allowAgentRefactor:        boolean;
   requireActionConfirmation: boolean;
+  // Phase 6
+  speakReplies:               boolean;
+  enableWebSearch:            boolean;
+  strictLocalMode:            boolean;
+  adaptiveForegroundProfiles: boolean;
+  ttsVoice:                   string;
 }
 
 export const system = {
@@ -1271,9 +1283,10 @@ export const tts = {
 // ── RAG ───────────────────────────────────────────────────────────────────────
 
 export interface RagCollection {
-  id:        string;
-  name:      string;
-  createdAt: string;
+  id:         string;
+  name:       string;
+  chunkCount: number;
+  createdAt:  string;
 }
 
 export interface RagChunk {

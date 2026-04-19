@@ -1,7 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
-import { Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2, Code2, AlertCircle, DollarSign } from "lucide-react";
-import api, { type AppSettings, type ContinueRule, type LifetimeUsage } from "../api.js";
+import {
+  Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2,
+  Code2, AlertCircle, DollarSign, Info,
+} from "lucide-react";
+import api, { type AppSettings, type ContinueRule, type LifetimeUsage, type RagCollection } from "../api.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -24,7 +27,7 @@ function SectionHeader({ title }: { title: string }) {
 }
 
 interface SettingRowProps {
-  label: string;
+  label: string | React.ReactNode;
   description?: string;
   children: React.ReactNode;
 }
@@ -127,7 +130,6 @@ export default function SettingsPage() {
     staleTime: 60_000,
   });
 
-  // Populate draft from fetched data
   useEffect(() => {
     if (settingsQ.data?.settings && !draft) {
       setDraft({ ...settingsQ.data.settings });
@@ -173,8 +175,7 @@ export default function SettingsPage() {
         </div>
         <div className="flex items-center gap-2">
           {saved && (
-            <div className="flex items-center gap-1.5 text-sm"
-              style={{ color: "var(--color-success)" }}>
+            <div className="flex items-center gap-1.5 text-sm" style={{ color: "var(--color-success)" }}>
               <CheckCircle size={14} /> Saved
             </div>
           )}
@@ -200,11 +201,35 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Models */}
+      {/* ── General ────────────────────────────────────────────────────────── */}
       <Card>
-        <SectionHeader title="Model Defaults" />
+        <SectionHeader title="General" />
+        <SettingRow label="Theme" description="Color scheme applied across the entire UI">
+          <SelectInput
+            value={s.theme}
+            onChange={(v) => update("theme", v)}
+            options={[
+              { value: "dark",  label: "Dark" },
+              { value: "light", label: "Light" },
+            ]}
+          />
+        </SettingRow>
+        <SettingRow label="Sidebar collapsed" description="Start with the sidebar hidden (toggle with keyboard shortcut)">
+          <Toggle value={s.sidebarCollapsed} onChange={(v) => update("sidebarCollapsed", v)} />
+        </SettingRow>
+        <SettingRow label="Notifications" description="Enable desktop-level notifications">
+          <Toggle value={s.notificationsEnabled} onChange={(v) => update("notificationsEnabled", v)} />
+        </SettingRow>
+        <SettingRow label="Chat history retention" description="Days to keep chat history in the database">
+          <NumberInput value={s.chatHistoryDays} onChange={(v) => update("chatHistoryDays", v)} min={1} max={365} />
+        </SettingRow>
+      </Card>
+
+      {/* ── Models ─────────────────────────────────────────────────────────── */}
+      <Card>
+        <SectionHeader title="Models" />
         <SettingRow label="Default chat model" description="Used when no model is specified in chat">
-          <TextInput value={s.defaultChatModel} onChange={(v) => update("defaultChatModel", v)} placeholder="e.g. qwen2.5:7b" />
+          <TextInput value={s.defaultChatModel} onChange={(v) => update("defaultChatModel", v)} placeholder="e.g. llama3.1:8b" />
         </SettingRow>
         <SettingRow label="Default coding model" description="Used by Aider and code-specific chat routes">
           <TextInput value={s.defaultCodingModel} onChange={(v) => update("defaultCodingModel", v)} placeholder="e.g. qwen2.5-coder:7b" />
@@ -212,8 +237,14 @@ export default function SettingsPage() {
         <SettingRow label="Auto-start Ollama" description="Launch Ollama when the server starts">
           <Toggle value={s.autoStartOllama} onChange={(v) => update("autoStartOllama", v)} />
         </SettingRow>
-        <SettingRow label="Model download path" description="Leave empty to use Ollama default">
+        <SettingRow label="Model download path" description="Leave empty to use the Ollama default">
           <TextInput value={s.modelDownloadPath} onChange={(v) => update("modelDownloadPath", v)} placeholder="C:\Users\you\.ollama\models" mono />
+        </SettingRow>
+        <SettingRow label="Max concurrent models" description="Maximum models loaded in VRAM simultaneously">
+          <NumberInput value={s.maxConcurrentModels} onChange={(v) => update("maxConcurrentModels", v)} min={1} max={8} />
+        </SettingRow>
+        <SettingRow label="VRAM alert threshold %" description="Show a warning when VRAM usage exceeds this percentage">
+          <NumberInput value={s.vramAlertThreshold} onChange={(v) => update("vramAlertThreshold", v)} min={50} max={100} />
         </SettingRow>
         <SettingRow label="Preferred install method" description="Default method when installing integrations">
           <SelectInput
@@ -228,42 +259,7 @@ export default function SettingsPage() {
         </SettingRow>
       </Card>
 
-      {/* Token tracking */}
-      <Card>
-        <SectionHeader title="Token Tracking" />
-        <SettingRow label="Show token counts" description="Display token usage in chat UI">
-          <Toggle value={s.showTokenCounts} onChange={(v) => update("showTokenCounts", v)} />
-        </SettingRow>
-        <SettingRow label="Daily token limit" description="Warn or block when exceeded (0 = disabled)">
-          <NumberInput value={s.dailyTokenLimit} onChange={(v) => update("dailyTokenLimit", v)} min={0} />
-        </SettingRow>
-        <SettingRow label="Warning threshold" description="Show a warning badge at this token count">
-          <NumberInput value={s.tokenWarningThreshold} onChange={(v) => update("tokenWarningThreshold", v)} min={0} />
-        </SettingRow>
-        <SettingRow label="Chat history retention" description="Days to keep chat history files">
-          <NumberInput value={s.chatHistoryDays} onChange={(v) => update("chatHistoryDays", v)} min={1} max={365} />
-        </SettingRow>
-      </Card>
-
-      {/* UI */}
-      <Card>
-        <SectionHeader title="UI" />
-        <SettingRow label="Theme" description="Color scheme">
-          <SelectInput
-            value={s.theme}
-            onChange={(v) => update("theme", v)}
-            options={[
-              { value: "dark",  label: "Dark" },
-              { value: "light", label: "Light" },
-            ]}
-          />
-        </SettingRow>
-        <SettingRow label="Notifications" description="Enable desktop-level notifications">
-          <Toggle value={s.notificationsEnabled} onChange={(v) => update("notificationsEnabled", v)} />
-        </SettingRow>
-      </Card>
-
-      {/* Agent Permissions */}
+      {/* ── Agent Permissions ───────────────────────────────────────────────── */}
       <Card>
         <SectionHeader title="Agent Permissions" />
         <SettingRow label="Allow agent file edits" description="Agent can apply proposed file edits via sovereignEdit">
@@ -283,51 +279,201 @@ export default function SettingsPage() {
         </SettingRow>
       </Card>
 
-      {/* Phase 6 settings */}
+      {/* ── Remote ─────────────────────────────────────────────────────────── */}
       <Card>
-        <SectionHeader title="Voice & Speech" />
+        <SectionHeader title="Remote" />
+        <SettingRow
+          label={
+            <span className="flex items-center gap-1.5">
+              <span style={{
+                display: "inline-block", width: 8, height: 8, borderRadius: "50%",
+                background: s.strictLocalMode ? "var(--color-success)" : "var(--color-muted)",
+              }} />
+              Strict Local Mode
+            </span>
+          }
+          description="Blocks all outbound HTTP to non-loopback addresses. Disables web search and update checks.">
+          <Toggle value={s.strictLocalMode ?? false} onChange={(v) => update("strictLocalMode", v)} />
+        </SettingRow>
+        <SettingRow label="Adaptive foreground profiles" description="Swap chat model when VS Code, Fusion360 etc. is in the foreground (Windows only)">
+          <Toggle value={s.adaptiveForegroundProfiles ?? true} onChange={(v) => update("adaptiveForegroundProfiles", v)} />
+        </SettingRow>
+      </Card>
+
+      {/* ── Voice ──────────────────────────────────────────────────────────── */}
+      <Card>
+        <SectionHeader title="Voice" />
         <SettingRow label="Speak replies (TTS)" description="Reads assistant replies aloud via Piper TTS — install with: winget install piper-tts">
-          <Toggle value={(s as typeof s & { speakReplies?: boolean }).speakReplies ?? false} onChange={(v) => update("speakReplies" as keyof AppSettings, v)} />
+          <Toggle value={s.speakReplies ?? false} onChange={(v) => update("speakReplies", v)} />
         </SettingRow>
         <SettingRow label="TTS voice" description="Piper voice model name (must be in ~/LocalAI-Tools/tts/voices/)">
           <TextInput
-            value={(s as typeof s & { ttsVoice?: string }).ttsVoice ?? "en_US-libritts_r-medium"}
-            onChange={(v) => update("ttsVoice" as keyof AppSettings, v)}
+            value={s.ttsVoice ?? "en_US-libritts_r-medium"}
+            onChange={(v) => update("ttsVoice", v)}
             placeholder="en_US-libritts_r-medium"
             mono
           />
         </SettingRow>
+        <SettingRow label="Enable web search" description="Allow /web command to fetch from SearxNG or DuckDuckGo">
+          <Toggle value={s.enableWebSearch ?? false} onChange={(v) => update("enableWebSearch", v)} />
+        </SettingRow>
       </Card>
 
+      {/* ── RAG ────────────────────────────────────────────────────────────── */}
+      <RagSection />
+
+      {/* ── Updates ────────────────────────────────────────────────────────── */}
       <Card>
-        <SectionHeader title="Web & Privacy" />
-        <SettingRow label="Enable web search" description="Allow /web command and chat RAG to fetch from SearxNG or DuckDuckGo">
-          <Toggle value={(s as typeof s & { enableWebSearch?: boolean }).enableWebSearch ?? false} onChange={(v) => update("enableWebSearch" as keyof AppSettings, v)} />
+        <SectionHeader title="Updates" />
+        <SettingRow label="Auto update check" description="Periodically check for new model versions and tool updates">
+          <Toggle value={s.autoUpdateCheck} onChange={(v) => update("autoUpdateCheck", v)} />
         </SettingRow>
-        <SettingRow
-          label={<span className="flex items-center gap-1.5">
-            <span style={{
-              display: "inline-block", width: 8, height: 8, borderRadius: "50%",
-              background: (s as typeof s & { strictLocalMode?: boolean }).strictLocalMode ? "var(--color-success)" : "var(--color-muted)",
-            }} />
-            Strict Local Mode
-          </span> as unknown as string}
-          description="Blocks all outbound HTTP requests to non-loopback addresses. Disables web search and update checks.">
-          <Toggle value={(s as typeof s & { strictLocalMode?: boolean }).strictLocalMode ?? false} onChange={(v) => update("strictLocalMode" as keyof AppSettings, v)} />
+        <SettingRow label="Check interval (seconds)" description="How often to poll for updates (default: 86400 = 1 day)">
+          <NumberInput value={s.updateCheckInterval} onChange={(v) => update("updateCheckInterval", v)} min={3600} />
         </SettingRow>
-        <SettingRow label="Adaptive foreground profiles" description="Swap chat model when VS Code, Fusion360, etc. is in the foreground (Windows only)">
-          <Toggle value={(s as typeof s & { adaptiveForegroundProfiles?: boolean }).adaptiveForegroundProfiles ?? true} onChange={(v) => update("adaptiveForegroundProfiles" as keyof AppSettings, v)} />
+        <SettingRow label="Backup before update" description="Create a snapshot of the model or file before applying any update">
+          <Toggle value={s.backupBeforeUpdate} onChange={(v) => update("backupBeforeUpdate", v)} />
         </SettingRow>
       </Card>
 
+      {/* ── Usage & Cost ───────────────────────────────────────────────────── */}
       <UsageSection />
       <LifetimeCostCard />
+
+      {/* ── About ──────────────────────────────────────────────────────────── */}
+      <AboutSection />
+
+      {/* ── Continue.dev Rules ─────────────────────────────────────────────── */}
       <ContinueRulesSection />
     </div>
   );
 }
 
-// ── Lifetime cost-saved counter (Step 5.6) ────────────────────────────────────
+// ── RAG Section ───────────────────────────────────────────────────────────────
+
+function RagSection() {
+  const qc = useQueryClient();
+  const collectionsQ = useQuery({
+    queryKey: ["rag-collections"],
+    queryFn: () => api.ragApi.listCollections(),
+    staleTime: 30_000,
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => api.ragApi.deleteCollection(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["rag-collections"] }),
+  });
+
+  const collections: RagCollection[] = collectionsQ.data?.collections ?? [];
+  const personalMemory = collections.find(c => c.name === "personal-memory");
+  const others = collections.filter(c => c.name !== "personal-memory");
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+      <SectionHeader title="RAG" />
+      <div className="p-4 space-y-3">
+        {/* Personal memory stats */}
+        <div className="p-3 rounded-lg" style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="text-xs font-semibold" style={{ color: "var(--color-foreground)" }}>personal-memory</div>
+            <div className="text-xs px-1.5 py-0.5 rounded-full"
+              style={{ background: "color-mix(in srgb, var(--color-accent) 15%, transparent)", color: "var(--color-accent)" }}>
+              {personalMemory ? `${personalMemory.chunkCount} chunks` : "empty"}
+            </div>
+          </div>
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+            Populated via <span className="font-mono">/pin &lt;text&gt;</span> in Chat. Used as long-term memory across sessions.
+          </div>
+        </div>
+
+        {/* Other collections */}
+        {others.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-xs font-semibold" style={{ color: "var(--color-muted)" }}>Other collections</div>
+            {others.map((col) => (
+              <div key={col.id} className="flex items-center gap-3 px-3 py-2 rounded-lg"
+                style={{ border: "1px solid var(--color-border)" }}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-mono" style={{ color: "var(--color-foreground)" }}>{col.name}</div>
+                  <div className="text-xs" style={{ color: "var(--color-muted)" }}>{col.chunkCount} chunks · created {new Date(col.createdAt).toLocaleDateString()}</div>
+                </div>
+                <button
+                  disabled={deleteMut.isPending}
+                  onClick={() => { if (confirm(`Delete collection "${col.name}"?`)) deleteMut.mutate(col.id); }}
+                  className="p-1 rounded"
+                  style={{ background: "color-mix(in srgb, var(--color-error) 10%, transparent)", color: "var(--color-error)" }}>
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {collectionsQ.isLoading && (
+          <div className="text-xs text-center py-2" style={{ color: "var(--color-muted)" }}>Loading collections…</div>
+        )}
+        {!collectionsQ.isLoading && collections.length === 0 && (
+          <div className="text-xs text-center py-2" style={{ color: "var(--color-muted)" }}>
+            No collections yet — use <span className="font-mono">/pin</span> in Chat to add memories
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── About Section ─────────────────────────────────────────────────────────────
+
+function AboutSection() {
+  const qc = useQueryClient();
+
+  const auditPurgeMut = useMutation({
+    mutationFn: () => api.usage.purge(),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["audit-history"] }),
+  });
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+      <SectionHeader title="About" />
+      <div className="p-4 space-y-3">
+        <div className="flex items-start gap-3 p-3 rounded-lg"
+          style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+          <Info size={16} style={{ color: "var(--color-accent)", flexShrink: 0, marginTop: 1 }} />
+          <div className="space-y-1">
+            <div className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>LocalAI Control Center</div>
+            <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+              Phase 7 — All capabilities active. Backend: Express 5 on :3001. Frontend: React 19 + Vite 7.
+            </div>
+            <div className="text-xs font-mono" style={{ color: "var(--color-muted)" }}>
+              Phases 0–7 complete · SQLite + Drizzle ORM · hnswlib-node RAG
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm" style={{ color: "var(--color-foreground)" }}>Purge audit log</div>
+            <div className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>Remove all audit log entries — file backups (.bak) are not deleted</div>
+          </div>
+          <button
+            disabled={auditPurgeMut.isPending}
+            onClick={() => { if (confirm("Purge all audit log entries? File backups are preserved.")) auditPurgeMut.mutate(); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+            style={{
+              background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+              color: "var(--color-error)",
+              border: "1px solid color-mix(in srgb, var(--color-error) 25%, transparent)",
+              opacity: auditPurgeMut.isPending ? 0.6 : 1,
+            }}>
+            <Trash2 size={11} /> {auditPurgeMut.isPending ? "Purging…" : "Purge Audit Log"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Lifetime cost-saved counter ───────────────────────────────────────────────
 
 function LifetimeCostCard() {
   const lifetimeQ = useQuery({
@@ -346,7 +492,7 @@ function LifetimeCostCard() {
 
   return (
     <Card>
-      <SectionHeader title="Lifetime Local Savings" />
+      <SectionHeader title="Usage & Cost" />
       <div className="p-4">
         {lifetimeQ.isLoading && (
           <div className="text-xs" style={{ color: "var(--color-muted)" }}>
@@ -355,7 +501,6 @@ function LifetimeCostCard() {
         )}
         {data && data.success && (
           <div className="space-y-3">
-            {/* Big number */}
             <div className="flex items-center gap-3 p-4 rounded-xl"
               style={{ background: "color-mix(in srgb, var(--color-success) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--color-success) 20%, transparent)" }}>
               <DollarSign size={24} style={{ color: "var(--color-success)", flexShrink: 0 }} />
@@ -370,7 +515,6 @@ function LifetimeCostCard() {
               </div>
             </div>
 
-            {/* Token breakdown */}
             <div className="grid grid-cols-3 gap-2">
               {[
                 { label: "Total tokens", value: fmt(data.totalTokens) },
@@ -440,7 +584,6 @@ function UsageSection() {
     <Card>
       <SectionHeader title="Usage & Token Tracking" />
       <div className="p-4 space-y-4">
-        {/* Today summary */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { label: "Today tokens", value: today?.totalTokens?.toLocaleString() ?? "—" },
@@ -456,7 +599,6 @@ function UsageSection() {
           ))}
         </div>
 
-        {/* 7-day history bar */}
         {history.length > 0 && (
           <div>
             <div className="text-xs font-semibold mb-2 flex items-center gap-1.5"
@@ -481,7 +623,6 @@ function UsageSection() {
           </div>
         )}
 
-        {/* 7-day average */}
         {avgDailyTokens !== null && (
           <div className="text-xs p-3 rounded-lg"
             style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
@@ -492,7 +633,6 @@ function UsageSection() {
           </div>
         )}
 
-        {/* Purge */}
         <div className="flex items-center justify-between">
           <div className="text-xs" style={{ color: "var(--color-muted)" }}>
             Purge all usage history — cannot be undone
@@ -565,7 +705,6 @@ function ContinueRulesSection() {
     <Card>
       <SectionHeader title="Continue.dev Rules" />
       <div className="p-4 space-y-3">
-        {/* Config status */}
         {config && (
           <div className="flex items-center gap-2 text-xs p-2.5 rounded-lg"
             style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
@@ -585,7 +724,6 @@ function ContinueRulesSection() {
           </div>
         )}
 
-        {/* Rules list */}
         {rules.length === 0 && !rulesQ.isLoading && (
           <div className="text-sm text-center py-4" style={{ color: "var(--color-muted)" }}>
             No rules yet — add one below
@@ -648,7 +786,6 @@ function ContinueRulesSection() {
           </div>
         ))}
 
-        {/* New rule */}
         {showNew ? (
           <div className="rounded-lg p-3 space-y-2"
             style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
