@@ -11,7 +11,12 @@ export type ThoughtCategory =
   | "config"
   | "chat"
   | "workspace"
-  | "system";
+  | "system"
+  | "security"
+  | "rag"
+  | "stt"
+  | "tts"
+  | "web";
 
 export interface ThoughtEntry {
   id: string;

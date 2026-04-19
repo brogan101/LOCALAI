@@ -125,6 +125,12 @@ export interface AppSettings {
   allowAgentSelfHeal:        boolean;
   allowAgentRefactor:        boolean;
   requireActionConfirmation: boolean;
+  // Phase 6 settings
+  speakReplies:              boolean;
+  enableWebSearch:           boolean;
+  strictLocalMode:           boolean;
+  adaptiveForegroundProfiles: boolean;
+  ttsVoice:                  string;
 }
 
 export interface AppConfig {
@@ -178,6 +184,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   allowAgentSelfHeal:        true,
   allowAgentRefactor:        true,
   requireActionConfirmation: true,
+  speakReplies:              false,
+  enableWebSearch:           false,
+  strictLocalMode:           false,
+  adaptiveForegroundProfiles: true,
+  ttsVoice:                  "en_US-libritts_r-medium",
 };
 
 function nowIso(): string {

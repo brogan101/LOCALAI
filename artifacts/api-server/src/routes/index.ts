@@ -21,6 +21,10 @@ import observability from "./observability.js";
 import tasks from "./tasks.js";
 import rollback from "./rollback.js";
 import sessions from "./sessions.js";
+import stt from "./stt.js";
+import tts from "./tts.js";
+import ragRoute from "./rag.js";
+import web from "./web.js";
 
 const router = Router();
 
@@ -46,5 +50,9 @@ router.use(kernel);
 router.use(observability);
 router.use(tasks);
 router.use(rollback);
+router.use(stt);
+router.use(tts);
+router.use(ragRoute);
+router.use(web);
 
 export default router;

@@ -283,6 +283,43 @@ export default function SettingsPage() {
         </SettingRow>
       </Card>
 
+      {/* Phase 6 settings */}
+      <Card>
+        <SectionHeader title="Voice & Speech" />
+        <SettingRow label="Speak replies (TTS)" description="Reads assistant replies aloud via Piper TTS — install with: winget install piper-tts">
+          <Toggle value={(s as typeof s & { speakReplies?: boolean }).speakReplies ?? false} onChange={(v) => update("speakReplies" as keyof AppSettings, v)} />
+        </SettingRow>
+        <SettingRow label="TTS voice" description="Piper voice model name (must be in ~/LocalAI-Tools/tts/voices/)">
+          <TextInput
+            value={(s as typeof s & { ttsVoice?: string }).ttsVoice ?? "en_US-libritts_r-medium"}
+            onChange={(v) => update("ttsVoice" as keyof AppSettings, v)}
+            placeholder="en_US-libritts_r-medium"
+            mono
+          />
+        </SettingRow>
+      </Card>
+
+      <Card>
+        <SectionHeader title="Web & Privacy" />
+        <SettingRow label="Enable web search" description="Allow /web command and chat RAG to fetch from SearxNG or DuckDuckGo">
+          <Toggle value={(s as typeof s & { enableWebSearch?: boolean }).enableWebSearch ?? false} onChange={(v) => update("enableWebSearch" as keyof AppSettings, v)} />
+        </SettingRow>
+        <SettingRow
+          label={<span className="flex items-center gap-1.5">
+            <span style={{
+              display: "inline-block", width: 8, height: 8, borderRadius: "50%",
+              background: (s as typeof s & { strictLocalMode?: boolean }).strictLocalMode ? "var(--color-success)" : "var(--color-muted)",
+            }} />
+            Strict Local Mode
+          </span> as unknown as string}
+          description="Blocks all outbound HTTP requests to non-loopback addresses. Disables web search and update checks.">
+          <Toggle value={(s as typeof s & { strictLocalMode?: boolean }).strictLocalMode ?? false} onChange={(v) => update("strictLocalMode" as keyof AppSettings, v)} />
+        </SettingRow>
+        <SettingRow label="Adaptive foreground profiles" description="Swap chat model when VS Code, Fusion360, etc. is in the foreground (Windows only)">
+          <Toggle value={(s as typeof s & { adaptiveForegroundProfiles?: boolean }).adaptiveForegroundProfiles ?? true} onChange={(v) => update("adaptiveForegroundProfiles" as keyof AppSettings, v)} />
+        </SettingRow>
+      </Card>
+
       <UsageSection />
       <LifetimeCostCard />
       <ContinueRulesSection />

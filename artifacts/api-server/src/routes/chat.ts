@@ -2,6 +2,7 @@ import { Router } from "express";
 import path from "path";
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
+import { isDangerousCommand } from "../lib/command-sanitizer.js";
 import { db } from "../db/database.js";
 import { chatSessions, chatMessages } from "../db/schema.js";
 
@@ -40,19 +41,7 @@ export interface AgentAction {
   rationale: string;
 }
 
-// ── Dangerous command detection ───────────────────────────────────────────────
-
-const DANGEROUS_PATTERNS = [
-  /\brm\s+-rf\b/i, /\bdel\s+\/[sf]\b/i, /\bformat\b/i, /\bmkfs\b/i,
-  /\bdd\s+if=/i, /\b:!+\b/, /\bshutdown\b/i, /\breboot\b/i,
-  /\bpoweroff\b/i, /\bsudo\s+rm\b/i, /\bcurl\b.*\|\s*bash/i,
-  /\bwget\b.*\|\s*sh/i, /\bchmod\s+777\b/i, /\bdropdb\b/i,
-  /\bdrop\s+database\b/i, /\btruncate\s+table\b/i,
-];
-
-export function isDangerousCommand(command: string): boolean {
-  return DANGEROUS_PATTERNS.some(p => p.test(command));
-}
+// isDangerousCommand is imported from command-sanitizer.ts
 
 // ── parseAgentActions ─────────────────────────────────────────────────────────
 
@@ -162,6 +151,22 @@ async function maybeBuildCodeContext(
     return await workspaceContextService.search(latestUserMessage, workspacePath, 6, 12000);
   } catch {
     return null;
+  }
+}
+
+async function buildRagContext(query: string, workspacePath?: string): Promise<string> {
+  try {
+    const { rag } = await import("../lib/rag.js");
+    const collections = await rag.listCollections();
+    if (collections.length === 0) return "";
+    // Include personal-memory + any collections matching this workspace
+    const relevantIds = collections
+      .filter(c => c.name === "personal-memory" || (workspacePath && c.name.includes(path.basename(workspacePath))))
+      .map(c => c.id);
+    if (relevantIds.length === 0) return "";
+    return await rag.buildRagContext(query, relevantIds, 5);
+  } catch {
+    return "";
   }
 }
 
@@ -345,9 +350,17 @@ router.post("/chat/stream", async (req, res) => {
       supervisorSuggestedModel: supervisorPlan.suggestedModel,
     };
 
-    const codeContext = await maybeBuildCodeContext(messages, workspacePath, useCodeContext);
-    const upstreamMessages: ChatMessage[] = codeContext
-      ? [{ role: "system" as const, content: contextSystemPrompt(codeContext) }, ...messages]
+    const latestUserQuery = [...messages].reverse().find(m => m.role === "user")?.content ?? "";
+    const [codeContext, ragContext] = await Promise.all([
+      maybeBuildCodeContext(messages, workspacePath, useCodeContext),
+      buildRagContext(latestUserQuery, workspacePath),
+    ]);
+
+    const systemParts: string[] = [];
+    if (codeContext) systemParts.push(contextSystemPrompt(codeContext));
+    if (ragContext)  systemParts.push(ragContext);
+    const upstreamMessages: ChatMessage[] = systemParts.length > 0
+      ? [{ role: "system" as const, content: systemParts.join("\n\n") }, ...messages]
       : messages;
 
     thoughtLog.publish({
@@ -550,8 +563,8 @@ router.post("/chat/command", async (req, res) => {
         "• `/run <command>` — propose a shell command",
         "• `/refactor <request>` — propose a workspace refactor",
         "• `/rollback <path>` — revert a file to its last backup",
-        "• `/pin <text>` — personal memory (arrives Phase 6)",
-        "• `/web <query>` — web search (arrives Phase 6)",
+        "• `/pin <text>` — save fact to personal memory (RAG)",
+        "• `/web <query>` — web search (SearxNG or DuckDuckGo)",
         "• `/help` — show this message",
       ].join("\n"),
     });
@@ -622,6 +635,11 @@ router.post("/chat/command", async (req, res) => {
   const runMatch = command.match(/^\/run\s+(.+)/i);
   if (runMatch) {
     const shellCmd = runMatch[1].trim();
+    const sanity = isDangerousCommand(shellCmd);
+    if (sanity.dangerous) {
+      thoughtLog.publish({ level: "error", category: "security", title: "Dangerous /run Blocked", message: `${sanity.reason}: ${shellCmd}` });
+      return res.status(403).json({ success: false, reason: sanity.reason, blocked: true });
+    }
     const action: AgentAction = {
       id:       randomUUID(),
       type:     "propose_command",
@@ -682,13 +700,52 @@ router.post("/chat/command", async (req, res) => {
     }
   }
 
-  // ── /pin and /web (phase 6 placeholders — informative message) ────────────
+  // ── /pin <text> — ingest into personal-memory collection ────────────────
 
   if (cmd.startsWith("/pin ")) {
-    return res.json({ success: true, action: "pin", message: "Personal memory arrives in Phase 6." });
+    const text = command.slice(5).trim();
+    if (!text) return res.json({ success: false, message: "/pin requires text" });
+    try {
+      const { rag } = await import("../lib/rag.js");
+      const collections = await rag.listCollections();
+      let memCol = collections.find(c => c.name === "personal-memory");
+      if (!memCol) memCol = await rag.createCollection("personal-memory");
+      await rag.ingest(memCol.id, { content: text, source: "pin" });
+      return res.json({ success: true, action: "pin", message: `Pinned to personal memory: "${text.slice(0, 80)}${text.length > 80 ? "…" : ""}"` });
+    } catch (err) {
+      return res.json({ success: false, message: `Pin failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   }
+
+  // ── /web <query> — web search ────────────────────────────────────────────
+
   if (cmd.startsWith("/web ")) {
-    return res.json({ success: true, action: "web", message: "Web search arrives in Phase 6." });
+    const query = command.slice(5).trim();
+    if (!query) return res.json({ success: false, message: "/web requires a query" });
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10_000);
+      const apiRes = await fetch(`http://127.0.0.1:3001/api/web/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
+      const data = await apiRes.json() as { success: boolean; results?: Array<{ title: string; url: string; snippet: string }>; backend?: string };
+      if (!data.success || !data.results?.length) {
+        return res.json({ success: true, action: "web", message: "No results found." });
+      }
+      const lines = data.results.slice(0, 5).map((r, i) =>
+        `${i + 1}. **[${r.title}](${r.url})**\n   ${r.snippet}`
+      ).join("\n\n");
+      return res.json({
+        success: true,
+        action: "web",
+        message: `**Web Search: "${query}"** (via ${data.backend ?? "search"})\n\n${lines}`,
+      });
+    } catch (err) {
+      return res.json({ success: false, message: `Web search failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
   }
 
   return res.json({

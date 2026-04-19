@@ -22,6 +22,7 @@ import {
 import {
   runCommand, runFile, selfHealingRun, diagnoseError,
 } from "../lib/file-execution-agent.js";
+import { isDangerousCommand } from "../lib/command-sanitizer.js";
 import { taskQueue } from "../lib/task-queue.js";
 import { thoughtLog } from "../lib/thought-log.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
@@ -599,10 +600,21 @@ router.post("/system/macros/:name/run", async (req, res) => {
 // POST /system/exec/run — run an arbitrary shell command
 router.post("/system/exec/run", async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
-  const command     = typeof body.command     === "string" ? body.command.trim()  : "";
-  const cwd         = typeof body.cwd         === "string" ? body.cwd.trim()      : undefined;
-  const timeoutMs   = typeof body.timeoutMs   === "number" ? body.timeoutMs       : 60_000;
+  const command        = typeof body.command        === "string"  ? body.command.trim()  : "";
+  const cwd            = typeof body.cwd            === "string"  ? body.cwd.trim()      : undefined;
+  const timeoutMs      = typeof body.timeoutMs      === "number"  ? body.timeoutMs       : 60_000;
+  const forceDangerous = typeof body.forceDangerous === "boolean" ? body.forceDangerous  : false;
   if (!command) return res.status(400).json({ success: false, message: "command is required" });
+
+  const sanity = isDangerousCommand(command);
+  if (sanity.dangerous) {
+    const settings = await loadSettings();
+    if (!forceDangerous || settings.requireActionConfirmation) {
+      thoughtLog.publish({ level: "error", category: "security", title: "Dangerous Command Blocked", message: `${sanity.reason}: ${command}` });
+      return res.status(403).json({ success: false, reason: sanity.reason, blocked: true });
+    }
+  }
+
   try {
     const result = await runCommand(command, { cwd, timeoutMs, streamToThoughts: true });
     return res.json(result);
@@ -708,8 +720,17 @@ router.post("/system/os/focus", async (req, res) => {
 router.post("/system/os/send-keys", async (req, res) => {
   if (!await requireAgentExec(res)) return;
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
-  const keys = typeof body["keys"] === "string" ? body["keys"] : "";
+  const keys           = typeof body["keys"]           === "string"  ? body["keys"] as string           : "";
+  const forceDangerous = typeof body["forceDangerous"] === "boolean" ? body["forceDangerous"] as boolean : false;
   if (!keys) return res.status(400).json({ success: false, message: "keys required" });
+  const sanity = isDangerousCommand(keys);
+  if (sanity.dangerous) {
+    const settings = await loadSettings();
+    if (!forceDangerous || settings.requireActionConfirmation) {
+      thoughtLog.publish({ level: "error", category: "security", title: "Dangerous Keystroke Blocked", message: `${sanity.reason}: ${keys}` });
+      return res.status(403).json({ success: false, reason: sanity.reason, blocked: true });
+    }
+  }
   try {
     await sendKeystrokes(keys);
     return res.json({ success: true });
@@ -722,8 +743,17 @@ router.post("/system/os/send-keys", async (req, res) => {
 router.post("/system/os/type-text", async (req, res) => {
   if (!await requireAgentExec(res)) return;
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
-  const text = typeof body["text"] === "string" ? body["text"] : "";
+  const text           = typeof body["text"]           === "string"  ? body["text"] as string           : "";
+  const forceDangerous = typeof body["forceDangerous"] === "boolean" ? body["forceDangerous"] as boolean : false;
   if (!text) return res.status(400).json({ success: false, message: "text required" });
+  const sanity = isDangerousCommand(text);
+  if (sanity.dangerous) {
+    const settings = await loadSettings();
+    if (!forceDangerous || settings.requireActionConfirmation) {
+      thoughtLog.publish({ level: "error", category: "security", title: "Dangerous Text Input Blocked", message: `${sanity.reason}: ${text}` });
+      return res.status(403).json({ success: false, reason: sanity.reason, blocked: true });
+    }
+  }
   try {
     await typeText(text);
     return res.json({ success: true });

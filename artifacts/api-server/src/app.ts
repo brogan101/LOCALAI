@@ -3,7 +3,8 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import type { Options as PinoHttpOptions } from "pino-http";
-import { spawn } from "child_process";
+import { spawn, exec } from "child_process";
+import { promisify } from "util";
 import { fileURLToPath } from "url";
 import path from "path";
 import os from "os";
@@ -13,12 +14,51 @@ import { stateOrchestrator } from "./lib/state-orchestrator.js";
 import { distributedNodeAuthMiddleware, startDistributedNodeHeartbeat } from "./lib/network-proxy.js";
 import { getUniversalGatewayTags } from "./lib/model-orchestrator.js";
 import { trackWindowForIdleMinimize } from "./lib/windows-system.js";
+import { foregroundWatcher } from "./lib/foreground-watcher.js";
 import routes from "./routes/index.js";
 import { initDatabase } from "./db/migrate.js";
 import { taskQueue } from "./lib/task-queue.js";
+import { loadSettings } from "./lib/secure-config.js";
+
+const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
+
+// ── STT sidecar boot ──────────────────────────────────────────────────────────
+
+async function maybeSpawnSttSidecar(): Promise<void> {
+  try {
+    const { stdout } = await execAsync("python --version", { timeout: 4000 });
+    const version = stdout.trim(); // e.g. "Python 3.11.2"
+    const match   = /Python (\d+)\.(\d+)/.exec(version);
+    if (!match) throw new Error("Could not parse Python version");
+    const [, major, minor] = match.map(Number);
+    if (major < 3 || (major === 3 && minor < 10)) throw new Error(`Python ${major}.${minor} < 3.10`);
+
+    const sidecarScript = path.resolve(
+      __dirname, "../../../sidecars/stt-server.py",
+    );
+    const sidecar = spawn("python", [sidecarScript], {
+      detached: true,
+      stdio:    "ignore",
+      env:      { ...process.env },
+    });
+    sidecar.unref();
+    thoughtLog.publish({
+      category: "kernel",
+      title:    "STT: Sidecar Spawned",
+      message:  `faster-whisper STT server started (pid ${sidecar.pid ?? "?"}) using ${version}`,
+    });
+  } catch (err) {
+    thoughtLog.publish({
+      level:    "warning",
+      category: "kernel",
+      title:    "STT unavailable: Python 3.10+ not found",
+      message:  err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 // ── Windows tray sidecar ──────────────────────────────────────────────────────
 
@@ -65,6 +105,57 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(distributedNodeAuthMiddleware);
+
+// ── Strict Local Mode — intercepts outbound fetches from server routes ────────
+// Applied as Express middleware that patches globalThis.fetch when enabled.
+// The actual per-request blocking happens in the fetch patch installed below.
+let _strictLocalModeActive = false;
+
+const _originalFetch = globalThis.fetch.bind(globalThis);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const TAILSCALE_CIDR_PREFIX = "100."; // 100.64.0.0/10
+
+function isAllowedHost(hostname: string): boolean {
+  if (LOOPBACK_HOSTS.has(hostname)) return true;
+  if (hostname.startsWith(TAILSCALE_CIDR_PREFIX)) return true;
+  return false;
+}
+
+// Replace global fetch with a strict-local-aware version
+globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  if (_strictLocalModeActive) {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+    try {
+      const parsed = new URL(urlStr);
+      if (!isAllowedHost(parsed.hostname)) {
+        const { thoughtLog: tl } = await import("./lib/thought-log.js");
+        tl.publish({
+          level:    "error",
+          category: "security",
+          title:    "Strict Local Mode Blocked",
+          message:  `Outbound request to ${parsed.hostname} blocked`,
+          metadata: { url: urlStr },
+        });
+        throw new Error(`Strict Local Mode blocked outbound request to ${urlStr}`);
+      }
+    } catch (e) {
+      if (e instanceof TypeError) { /* invalid URL — let it fail naturally */ }
+      else throw e;
+    }
+  }
+  return _originalFetch(input, init);
+};
+
+// Expose toggle for settings changes
+export function setStrictLocalMode(enabled: boolean): void {
+  _strictLocalModeActive = enabled;
+}
+
+// Wire to settings on boot
+void loadSettings().then(s => {
+  _strictLocalModeActive = s.strictLocalMode ?? false;
+}).catch(() => {});
+
 app.use("/api", routes);
 
 // ── Background service boot sequence ─────────────────────────────────────────
@@ -98,6 +189,16 @@ void stateOrchestrator.hydrate();
 trackWindowForIdleMinimize("api-server", 30_000);
 trackWindowForIdleMinimize("localai-control-center", 30_000);
 spawnTraySidecar();
+void maybeSpawnSttSidecar();
+
+// Start foreground watcher if adaptive profiles enabled (default on)
+void loadSettings().then(settings => {
+  if (settings.adaptiveForegroundProfiles !== false) {
+    foregroundWatcher.start();
+  }
+}).catch(() => {
+  foregroundWatcher.start(); // default on if settings unreadable
+});
 
 startDistributedNodeHeartbeat();
 

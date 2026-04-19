@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type KeyboardEvent, type ChangeEvent } from "react";
+import { useState, useRef, useEffect, useCallback, type KeyboardEvent, type ChangeEvent, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Send, Bot, User, Cpu, Code2, Wrench, Eye, Sparkles,
@@ -7,7 +7,7 @@ import {
   FolderOpen, Play, Image, Paperclip, X, Terminal,
   CheckCircle, XCircle, RotateCcw, Loader2, FileDiff,
   Layers, GitBranch, Plus, PanelLeft, MoreVertical,
-  Copy, Edit2, Trash2, GitFork, Check,
+  Copy, Edit2, Trash2, GitFork, Check, Mic, MicOff, Camera, Volume2, VolumeX,
 } from "lucide-react";
 import api, {
   type ChatMessage, type SupervisorInfo, type ContextWorkspaceSummary,
@@ -1307,6 +1307,18 @@ export default function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
+  // STT mic recording
+  const [recording, setRecording] = useState(false);
+  const [sttError, setSttError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // TTS audio
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Drag-drop state
+  const [dragOver, setDragOver] = useState(false);
+
   const [, navigate] = useLocation();
   const search = useSearch();
   const qc = useQueryClient();
@@ -1321,6 +1333,7 @@ export default function ChatPage() {
     staleTime: 60_000,
   });
   const settings = settingsData?.settings ?? null;
+  const speakReplies = (settings as (typeof settings & { speakReplies?: boolean }) | null)?.speakReplies ?? false;
 
   // ── Session bootstrap: on mount, load from URL or create new ────────────────
 
@@ -1457,6 +1470,113 @@ export default function ChatPage() {
     if (id === sessionId) {
       void handleNewChat();
     }
+  }
+
+  // ── STT mic recording ──────────────────────────────────────────────────────
+
+  async function startRecording() {
+    setSttError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      audioChunksRef.current = [];
+      mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        const formData = new FormData();
+        formData.append("file", blob, "recording.webm");
+        try {
+          const res = await fetch("/api/stt/transcribe", { method: "POST", body: formData });
+          const data = await res.json() as { success: boolean; text?: string; error?: string; unavailable?: boolean };
+          if (data.unavailable) {
+            setSttError("STT unavailable — install Python 3.10+ and faster-whisper");
+          } else if (data.text) {
+            setInput(prev => prev ? `${prev} ${data.text}` : (data.text ?? ""));
+            textareaRef.current?.focus();
+          } else {
+            setSttError(data.error ?? "Transcription failed");
+          }
+        } catch (err) {
+          setSttError(err instanceof Error ? err.message : "Transcription error");
+        }
+        setRecording(false);
+      };
+      mr.start();
+      mediaRecorderRef.current = mr;
+      setRecording(true);
+    } catch (err) {
+      setSttError(err instanceof Error ? err.message : "Microphone access denied");
+    }
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+  }
+
+  // ── Screenshot to chat ────────────────────────────────────────────────────
+
+  async function handleScreenshot() {
+    try {
+      const res = await fetch("/api/system/os/screenshot", { method: "POST" });
+      const data = await res.json() as { success: boolean; base64?: string; message?: string };
+      if (data.success && data.base64) {
+        const dataUrl = `data:image/png;base64,${data.base64}`;
+        setAttachedImages(prev => [...prev, { dataUrl, base64: data.base64!, name: "screenshot.png" }]);
+      } else {
+        setError(data.message ?? "Screenshot failed");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Screenshot error");
+    }
+  }
+
+  // ── TTS playback ──────────────────────────────────────────────────────────
+
+  async function speakText(text: string) {
+    if (!speakReplies || !text.trim()) return;
+    try {
+      const res = await fetch("/api/tts/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.slice(0, 2000) }),
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      void audio.play().catch(() => {});
+      audio.onended = () => URL.revokeObjectURL(url);
+    } catch { /* ignore TTS errors */ }
+  }
+
+  // ── Drag-drop ─────────────────────────────────────────────────────────────
+
+  function handleDragOver(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(true);
+  }
+
+  function handleDragLeave(e: DragEvent<HTMLDivElement>) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOver(false);
+    }
+  }
+
+  function handleDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(false);
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    const images = Array.from(files).filter(f => f.type.startsWith("image/"));
+    const others = Array.from(files).filter(f => !f.type.startsWith("image/"));
+    if (images.length > 0) handleImageFiles({ ...images, length: images.length, item: (i: number) => images[i] } as unknown as FileList);
+    if (others.length > 0) handleTextFiles({ ...others, length: others.length, item: (i: number) => others[i] } as unknown as FileList);
   }
 
   // ── Image attach ───────────────────────────────────────────────────────────
@@ -1674,6 +1794,9 @@ export default function ChatPage() {
         }
         return next;
       });
+
+      // TTS: speak reply if enabled
+      if (collectedText) void speakText(collectedText);
     } catch (err: unknown) {
       if ((err as Error).name === "AbortError") return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1790,7 +1913,18 @@ export default function ChatPage() {
         )}
 
         {/* Messages pane */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div
+          className="flex-1 flex flex-col overflow-hidden"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          style={{ position: "relative" }}>
+          {dragOver && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none"
+              style={{ background: "color-mix(in srgb, var(--color-accent) 10%, transparent)", border: "2px dashed var(--color-accent)" }}>
+              <div className="text-sm font-medium" style={{ color: "var(--color-accent)" }}>Drop image or file to attach</div>
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto px-6 py-4">
             {sessionLoading && (
               <div className="flex items-center justify-center h-full">
@@ -1948,6 +2082,29 @@ export default function ChatPage() {
                     style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
                     <FolderOpen size={13} />
                   </button>
+
+                  {/* Screenshot button */}
+                  <button
+                    onClick={() => void handleScreenshot()}
+                    title="Screenshot to chat"
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs"
+                    style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+                    <Camera size={13} />
+                  </button>
+
+                  {/* Mic button (STT) */}
+                  <button
+                    onClick={() => recording ? stopRecording() : void startRecording()}
+                    title={recording ? "Stop recording" : "Voice input (STT)"}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs"
+                    style={{
+                      background: recording ? "color-mix(in srgb, var(--color-error) 15%, transparent)" : "var(--color-elevated)",
+                      color: recording ? "var(--color-error)" : "var(--color-muted)",
+                      border: `1px solid ${recording ? "color-mix(in srgb, var(--color-error) 30%, transparent)" : "var(--color-border)"}`,
+                    }}>
+                    {recording ? <MicOff size={13} /> : <Mic size={13} />}
+                    {recording && <span className="animate-pulse">●</span>}
+                  </button>
                 </div>
 
                 <button
@@ -1968,6 +2125,14 @@ export default function ChatPage() {
               Enter to send · Shift+Enter for newline · /help for commands
               {useCodeContext && workspacePath && <span style={{ color: "var(--color-info)" }}> · code context active</span>}
             </div>
+            {sttError && (
+              <div className="text-xs mt-1 text-center flex items-center justify-center gap-1"
+                style={{ color: "var(--color-warn)" }}>
+                <AlertCircle size={11} />
+                <span>{sttError}</span>
+                <button onClick={() => setSttError(null)} style={{ color: "var(--color-muted)" }}><X size={10} /></button>
+              </div>
+            )}
           </div>
         </div>
 

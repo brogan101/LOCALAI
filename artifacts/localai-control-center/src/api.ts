@@ -1256,10 +1256,67 @@ export const sessions = {
     post<{ success: boolean; id: string }>(`/chat/sessions/${encodeURIComponent(id)}/messages`, { role, content, ...extras }),
 };
 
+// ── STT ───────────────────────────────────────────────────────────────────────
+
+export const stt = {
+  status: () => get<{ available: boolean; sidecarUrl: string }>("/stt/status"),
+};
+
+// ── TTS ───────────────────────────────────────────────────────────────────────
+
+export const tts = {
+  status: () => get<{ available: boolean; voices: string[]; defaultVoice: string; voicesDir: string }>("/tts/status"),
+};
+
+// ── RAG ───────────────────────────────────────────────────────────────────────
+
+export interface RagCollection {
+  id:        string;
+  name:      string;
+  createdAt: string;
+}
+
+export interface RagChunk {
+  id:           string;
+  collectionId: string;
+  source:       string;
+  chunkIndex:   number;
+  text:         string;
+  score:        number;
+}
+
+export const ragApi = {
+  createCollection: (name: string) =>
+    post<{ success: boolean; collection: RagCollection }>("/rag/collections", { name }),
+  listCollections: () =>
+    get<{ success: boolean; collections: RagCollection[] }>("/rag/collections"),
+  deleteCollection: (id: string) =>
+    del<{ success: boolean }>(`/rag/collections/${encodeURIComponent(id)}`),
+  ingest: (collectionId: string, opts: { filePath?: string; content?: string; source?: string }) =>
+    post<{ success: boolean; chunksAdded: number }>("/rag/ingest", { collectionId, ...opts }),
+  search: (query: string, collectionIds: string[], topK?: number) =>
+    post<{ success: boolean; chunks: RagChunk[] }>("/rag/search", { query, collectionIds, topK }),
+};
+
+// ── Web Search ────────────────────────────────────────────────────────────────
+
+export interface WebSearchResult {
+  title:   string;
+  url:     string;
+  snippet: string;
+}
+
+export const webSearch = {
+  search: (query: string) =>
+    post<{ success: boolean; results: WebSearchResult[]; backend: string }>("/web/search", { query }),
+  fetch: (url: string) =>
+    post<{ success: boolean; markdown: string; url: string }>("/web/fetch", { url }),
+};
+
 export default {
   health, kernel, models, modelsExtra, chat, observability, tasks,
   system, systemExtra, workspace, workspaceExtra,
   studios, integrations, remote, continueApi, context, intelligence,
   filebrowser, stack, repair, rollback, updater, usage, audit, settings,
-  hardware, os, sessions,
+  hardware, os, sessions, stt, tts, ragApi, webSearch,
 };
