@@ -977,47 +977,167 @@ function AgentActionPanel({
 
 // ── Model selector ────────────────────────────────────────────────────────────
 
-function ModelSelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function ModelSelector({ value, onChange, onLoadStatus }: {
+  value: string;
+  onChange: (v: string) => void;
+  onLoadStatus?: (msg: string | null) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadMsg, setLoadMsg] = useState<string | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
+  const [dropPos, setDropPos] = useState({ top: 0, left: 0, width: 220 });
+
   const { data } = useQuery({
     queryKey: ["chatModels"],
     queryFn: () => api.chat.chatModels(),
-    staleTime: 30_000,
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+  const { data: runningData } = useQuery({
+    queryKey: ["runningModels"],
+    queryFn: () => api.models.running(),
+    staleTime: 10_000,
+    refetchInterval: 10_000,
   });
 
-  const models = data?.models ?? [];
+  const allModels = data?.models ?? [];
+  const runningNames = new Set((runningData?.models ?? []).map(m => m.name));
+
+  // Sort: running first, then alpha
+  const sorted = [...allModels].sort((a, b) => {
+    const ar = runningNames.has(a.name) ? 0 : 1;
+    const br = runningNames.has(b.name) ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return a.name.localeCompare(b.name);
+  });
+
+  // Default to first model if none selected and models loaded
+  useEffect(() => {
+    if (!value && sorted.length > 0) onChange(sorted[0].name);
+  }, [sorted.length]);
+
+  function openDropdown() {
+    if (!btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setDropPos({
+      top: rect.top - 4,   // position above button
+      left: rect.left,
+      width: Math.max(rect.width, 240),
+    });
+    setOpen(true);
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function onMouseDown(e: MouseEvent) {
+      if (dropRef.current && !dropRef.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [open]);
+
+  async function selectModel(name: string) {
+    onChange(name);
+    setOpen(false);
+    if (!name) return;
+    // Auto-load the selected model
+    setLoading(true);
+    const msg = `Loading ${name} into VRAM…`;
+    setLoadMsg(msg);
+    onLoadStatus?.(msg);
+    try {
+      const r = await api.models.load(name);
+      const done = r.success ? "Model ready ✓" : `Load failed: ${r.message}`;
+      setLoadMsg(done);
+      onLoadStatus?.(done);
+      setTimeout(() => { setLoadMsg(null); onLoadStatus?.(null); }, 3000);
+    } catch (e) {
+      const err = `Load error: ${e instanceof Error ? e.message : String(e)}`;
+      setLoadMsg(err);
+      onLoadStatus?.(err);
+      setTimeout(() => { setLoadMsg(null); onLoadStatus?.(null); }, 5000);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const label = value || "Auto-route";
 
   return (
     <div className="relative">
       <button
-        onClick={() => setOpen(o => !o)}
+        ref={btnRef}
+        onClick={() => open ? setOpen(false) : openDropdown()}
         className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors"
         style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }}>
-        <Cpu size={11} />
-        <span>{label}</span>
+        {loading
+          ? <div className="w-3 h-3 border-2 border-current/40 border-t-current rounded-full animate-spin" />
+          : <Cpu size={11} />}
+        <span className="max-w-[140px] truncate">{label}</span>
         <ChevronDown size={10} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
 
+      {loadMsg && !open && (
+        <div className="absolute bottom-full mb-1 left-0 text-xs px-2 py-1 rounded whitespace-nowrap"
+          style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)", zIndex: 100 }}>
+          {loadMsg}
+        </div>
+      )}
+
       {open && (
-        <div className="absolute bottom-full mb-1 left-0 z-50 rounded-lg overflow-hidden shadow-xl"
-          style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", minWidth: 180 }}>
+        <div
+          ref={dropRef}
+          style={{
+            position: "fixed",
+            top: dropPos.top,
+            left: dropPos.left,
+            width: dropPos.width,
+            zIndex: 9999,
+            transform: "translateY(-100%)",
+            background: "var(--color-elevated)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+            maxHeight: 320,
+            overflowY: "auto",
+          }}>
           <button
-            onClick={() => { onChange(""); setOpen(false); }}
-            className="w-full text-left px-3 py-2 text-xs transition-colors hover:opacity-80"
+            onClick={() => selectModel("")}
+            className="w-full text-left px-3 py-2 text-xs hover:opacity-80"
             style={{ background: !value ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
-            Auto-route (Supervisor)
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full" style={{ background: "var(--color-muted)" }} />
+              <span>Auto-route (Supervisor)</span>
+            </div>
           </button>
-          {models.map((m, idx) => (
-            <button
-              key={`${m.name}-${idx}`}
-              onClick={() => { onChange(m.name); setOpen(false); }}
-              className="w-full text-left px-3 py-2 text-xs transition-colors hover:opacity-80"
-              style={{ background: value === m.name ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
-              <span>{m.name}</span>
-              {m.paramSize && <span className="ml-1 opacity-50">{m.paramSize}</span>}
-            </button>
-          ))}
+          {sorted.map(m => {
+            const running = runningNames.has(m.name);
+            return (
+              <button
+                key={`${m.name}:${m.name}`}
+                onClick={() => void selectModel(m.name)}
+                className="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                style={{ background: value === m.name ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: running ? "var(--color-success)" : "var(--color-border)" }} />
+                  <span className="font-medium truncate">{m.name}</span>
+                  {m.paramSize && <span className="ml-auto opacity-50 shrink-0">{m.paramSize}</span>}
+                </div>
+              </button>
+            );
+          })}
+          {sorted.length === 0 && (
+            <div className="px-3 py-2 text-xs" style={{ color: "var(--color-muted)" }}>
+              No models installed — pull one in Models
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1641,6 +1761,8 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [modelLoadStatus, setModelLoadStatus] = useState<string | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
 
   // Agent action panel state
   const [pendingActions, setPendingActions] = useState<AgentAction[]>([]);
@@ -2118,8 +2240,9 @@ export default function ChatPage() {
   // ── Main send (2.8 images, 2.9 files) ─────────────────────────────────────
 
   const send = useCallback(async () => {
+    console.log("[SEND FIRED]", { input, streaming, sessionId, model });
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || modelLoading) return;
 
     // Slash command interception (2.6)
     if (text.startsWith("/")) {
@@ -2129,6 +2252,30 @@ export default function ChatPage() {
 
     setError(null);
     setInput("");
+
+    // Auto-load model before first message if not already in VRAM
+    const targetModel = model || undefined;
+    if (targetModel) {
+      try {
+        const runningRes = await api.models.running();
+        const isRunning = runningRes.models.some(m => m.name === targetModel);
+        if (!isRunning) {
+          setModelLoading(true);
+          const loadMsg = `Loading ${targetModel} into VRAM… (~15s)`;
+          setModelLoadStatus(loadMsg);
+          try {
+            await api.models.load(targetModel);
+            setModelLoadStatus("Model ready ✓");
+            setTimeout(() => setModelLoadStatus(null), 2000);
+          } catch (loadErr) {
+            setModelLoadStatus(`Load warning: ${loadErr instanceof Error ? loadErr.message : String(loadErr)}`);
+            setTimeout(() => setModelLoadStatus(null), 5000);
+          } finally {
+            setModelLoading(false);
+          }
+        }
+      } catch { /* non-fatal — proceed anyway */ }
+    }
 
     const messageText = buildMessageWithAttachments(text);
     const imagesToSend = [...attachedImages];
@@ -2254,7 +2401,7 @@ export default function ChatPage() {
       setStreaming(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [input, messages, model, sessionId, workspacePath, useCodeContext, streaming, attachedImages, attachedFiles]);
+  }, [input, messages, model, sessionId, workspacePath, useCodeContext, streaming, modelLoading, attachedImages, attachedFiles]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
@@ -2517,7 +2664,7 @@ export default function ChatPage() {
               />
               <div className="flex items-center justify-between px-3 pb-2.5 gap-2 flex-wrap">
                 <div className="flex items-center gap-2">
-                  <ModelSelector value={model} onChange={setModel} />
+                  <ModelSelector value={model} onChange={setModel} onLoadStatus={setModelLoadStatus} />
                   <WorkspaceSelector value={workspacePath} onChange={setWorkspacePath} />
 
                   {/* Code context toggle */}
@@ -2588,10 +2735,12 @@ export default function ChatPage() {
 
                 <button
                   onClick={() => void send()}
-                  disabled={(!input.trim() && attachedImages.length === 0) || streaming}
+                  disabled={(!input.trim() && attachedImages.length === 0) || streaming || modelLoading}
                   className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-opacity disabled:opacity-40"
                   style={{ background: "var(--color-accent)", color: "#fff" }}>
-                  {streaming ? (
+                  {modelLoading ? (
+                    <><div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Loading model</>
+                  ) : streaming ? (
                     <><div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Thinking</>
                   ) : (
                     <><Send size={13} /> Send</>
@@ -2599,6 +2748,15 @@ export default function ChatPage() {
                 </button>
               </div>
             </div>
+
+            {/* Model load status bar */}
+            {modelLoadStatus && (
+              <div className="text-xs mt-1.5 px-1 flex items-center gap-1.5"
+                style={{ color: modelLoadStatus.includes("ready") ? "var(--color-success)" : modelLoadStatus.includes("error") || modelLoadStatus.includes("failed") ? "var(--color-error)" : "var(--color-info)" }}>
+                {modelLoading && <div className="w-2.5 h-2.5 border border-current/40 border-t-current rounded-full animate-spin" />}
+                {modelLoadStatus}
+              </div>
+            )}
 
             <div className="text-xs mt-2 text-center" style={{ color: "var(--color-muted)" }}>
               Enter to send · Shift+Enter for newline · /help for commands

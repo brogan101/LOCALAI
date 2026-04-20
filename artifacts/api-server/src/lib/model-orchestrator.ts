@@ -723,7 +723,7 @@ export async function loadOllamaModel(modelName: string): Promise<void> {
   await distributedFetchJson("/api/generate", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: modelName, prompt: "", keep_alive: "30m" }),
-  }, 15000);
+  }, 120000);
 }
 
 export async function unloadOllamaModel(modelName: string): Promise<void> {
