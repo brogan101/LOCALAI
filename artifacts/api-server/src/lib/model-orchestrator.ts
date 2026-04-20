@@ -38,7 +38,6 @@ import {
 
 const execAsync = promisify(exec);
 
-const MODEL_ROLES_FILE   = path.join(toolsRoot(), "model-roles.json");
 const GATEWAY_STATE_FILE = path.join(toolsRoot(), "model-gateway.json");
 
 // ── Catalog cache ─────────────────────────────────────────────────────────────
@@ -238,8 +237,8 @@ export function inferIntentFromMessages(messages: ChatMessage[]): RouteDecision[
 
 export async function loadRoleAssignments(): Promise<Record<string, string>> {
   try {
-    if (!existsSync(MODEL_ROLES_FILE)) return {};
-    return JSON.parse(await readFile(MODEL_ROLES_FILE, "utf-8")) as Record<string, string>;
+    const { modelRolesService } = await import("./model-roles-service.js");
+    return await modelRolesService.getRoles();
   } catch { return {}; }
 }
 
@@ -434,14 +433,26 @@ function matchesModel(candidate: GatewayModel, query: string): boolean {
   return n === q || n.startsWith(`${q}:`) || n.startsWith(q);
 }
 
+const EMBEDDING_MODEL_PATTERNS = [
+  "embed", "embedding", "nomic-embed", "mxbai-embed", "all-minilm", "minilm",
+  "bge-", "bge-m3", "snowflake-arctic-embed", "paraphrase-multilingual",
+  "sentence-transformer", "text-embedding", "jina-embeddings", "gte-",
+];
+
+function isEmbeddingModel(name: string): boolean {
+  const n = name.toLowerCase();
+  return EMBEDDING_MODEL_PATTERNS.some(p => n.includes(p));
+}
+
 function pickByQueries(models: GatewayModel[], queries: string[]): GatewayModel[] {
+  const chatModels = models.filter(m => !isEmbeddingModel(m.name));
   const ordered: GatewayModel[] = []; const seen = new Set<string>();
   for (const query of queries) {
-    const match = models.find(c => !seen.has(c.name) && matchesModel(c, query));
+    const match = chatModels.find(c => !seen.has(c.name) && matchesModel(c, query));
     if (!match) continue;
     ordered.push(match); seen.add(match.name);
   }
-  for (const model of models) { if (!seen.has(model.name)) ordered.push(model); }
+  for (const model of chatModels) { if (!seen.has(model.name)) ordered.push(model); }
   return ordered;
 }
 
@@ -503,6 +514,9 @@ export async function routeModelForMessages(
   const candidates    = buildCandidateOrder(tags.models, roles, intent, requestedModel, hint);
   const runningModels = tags.models.filter(m => m.isRunning);
   const ordered       = [...candidates.filter(m => m.routeAffinity === intent), ...candidates.filter(m => m.routeAffinity !== intent)];
+  if (ordered.length === 0) {
+    throw new Error("No chat-capable Ollama models are installed. Pull a chat model first, for example: ollama pull llama3.1:8b");
+  }
   let selected = ordered[0]!;
   let admission = admissionForModel(selected, tags.vramGuard, runningModels);
   for (const candidate of ordered) {
