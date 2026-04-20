@@ -6,6 +6,33 @@ import {
 } from "lucide-react";
 import api, { type AppSettings, type ContinueRule, type LifetimeUsage, type RagCollection } from "../api.js";
 
+// ── Theme presets ─────────────────────────────────────────────────────────────
+
+const THEME_PRESETS = [
+  { id: "dark",          label: "Dark",          accent: "#7c3aed", bg: "#0f1117" },
+  { id: "light",         label: "Light",         accent: "#7c3aed", bg: "#f8fafc" },
+  { id: "midnight-blue", label: "Midnight Blue",  accent: "#3b82f6", bg: "#090e1a" },
+  { id: "forest",        label: "Forest",         accent: "#22c55e", bg: "#0a120b" },
+  { id: "crimson",       label: "Crimson",        accent: "#ef4444", bg: "#120808" },
+  { id: "solar",         label: "Solar",          accent: "#268bd2", bg: "#fdf6e3" },
+  { id: "nord",          label: "Nord",           accent: "#88c0d0", bg: "#2e3440" },
+  { id: "cyberpunk",     label: "Cyberpunk",      accent: "#ff00ff", bg: "#050510" },
+] as const;
+
+const COLOR_SLOTS = [
+  { prop: "--color-background", label: "Background" },
+  { prop: "--color-surface",    label: "Surface" },
+  { prop: "--color-elevated",   label: "Elevated" },
+  { prop: "--color-border",     label: "Border" },
+  { prop: "--color-foreground", label: "Foreground" },
+  { prop: "--color-muted",      label: "Muted" },
+  { prop: "--color-accent",     label: "Accent" },
+  { prop: "--color-success",    label: "Success" },
+  { prop: "--color-warn",       label: "Warning" },
+  { prop: "--color-error",      label: "Error" },
+  { prop: "--color-info",       label: "Info" },
+] as const;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
@@ -201,13 +228,91 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* ── Theme ──────────────────────────────────────────────────────────── */}
+      <Card>
+        <SectionHeader title="Theme" />
+        <div className="p-4 space-y-4">
+          {/* Preset swatches */}
+          <div>
+            <div className="text-xs font-medium mb-2" style={{ color: "var(--color-muted)" }}>Preset</div>
+            <div className="flex flex-wrap gap-2">
+              {THEME_PRESETS.map(p => {
+                const active = (s.themePreset ?? s.theme ?? "dark") === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      update("themePreset", p.id);
+                      update("theme", p.id);
+                    }}
+                    title={p.label}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                    style={{
+                      background: p.bg,
+                      border: `2px solid ${active ? p.accent : "transparent"}`,
+                      color: p.id === "solar" ? "#073642" : "#e2e8f0",
+                      boxShadow: active ? `0 0 0 1px ${p.accent}` : "none",
+                    }}>
+                    <span className="w-3 h-3 rounded-full inline-block" style={{ background: p.accent }} />
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Color overrides */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>Color Overrides</div>
+              <button
+                onClick={() => update("themeOverrides", {})}
+                className="text-xs px-2 py-0.5 rounded"
+                style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+                Reset all
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {COLOR_SLOTS.map(slot => {
+                const overrides = s.themeOverrides ?? {};
+                const val = overrides[slot.prop] ?? "";
+                return (
+                  <div key={slot.prop} className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={val || "#000000"}
+                      onChange={e => update("themeOverrides", { ...overrides, [slot.prop]: e.target.value })}
+                      className="w-7 h-7 rounded cursor-pointer border-0 p-0"
+                      style={{ background: "none" }}
+                    />
+                    <span className="text-xs" style={{ color: "var(--color-muted)" }}>{slot.label}</span>
+                    {val && (
+                      <button
+                        onClick={() => {
+                          const next = { ...overrides };
+                          delete next[slot.prop];
+                          update("themeOverrides", next);
+                        }}
+                        className="text-xs ml-auto"
+                        style={{ color: "var(--color-error)" }}>
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </Card>
+
       {/* ── General ────────────────────────────────────────────────────────── */}
       <Card>
         <SectionHeader title="General" />
-        <SettingRow label="Theme" description="Color scheme applied across the entire UI">
+        <SettingRow label="Dark/Light" description="Legacy theme toggle (use Theme presets above)">
           <SelectInput
             value={s.theme}
-            onChange={(v) => update("theme", v)}
+            onChange={(v) => { update("theme", v); update("themePreset", v); }}
             options={[
               { value: "dark",  label: "Dark" },
               { value: "light", label: "Light" },
@@ -258,6 +363,9 @@ export default function SettingsPage() {
           />
         </SettingRow>
       </Card>
+
+      {/* ── Model Roles ─────────────────────────────────────────────────────── */}
+      <ModelRolesCard />
 
       {/* ── Agent Permissions ───────────────────────────────────────────────── */}
       <Card>
@@ -346,6 +454,109 @@ export default function SettingsPage() {
       {/* ── Continue.dev Rules ─────────────────────────────────────────────── */}
       <ContinueRulesSection />
     </div>
+  );
+}
+
+// ── Model Roles Card ──────────────────────────────────────────────────────────
+
+function ModelRolesCard() {
+  const qc = useQueryClient();
+  const [testResults, setTestResults] = useState<Record<string, string>>({});
+  const [testing, setTesting] = useState<Record<string, boolean>>({});
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["model-roles"],
+    queryFn: () => api.models.roles(),
+    staleTime: 30_000,
+  });
+
+  const saveRolesMut = useMutation({
+    mutationFn: (roles: Array<{ role: string; model: string }>) => api.models.setRoles(roles),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["model-roles"] }),
+  });
+
+  const [roleEdits, setRoleEdits] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (data?.roles && Object.keys(roleEdits).length === 0) {
+      const init: Record<string, string> = {};
+      for (const r of data.roles) init[r.role] = r.assignedModel;
+      setRoleEdits(init);
+    }
+  }, [data?.roles]);
+
+  async function testRole(role: string, model: string) {
+    setTesting(p => ({ ...p, [role]: true }));
+    try {
+      const r = await api.modelsExtra.verify(model);
+      setTestResults(p => ({ ...p, [role]: r.success ? "OK" : "Not found" }));
+    } catch {
+      setTestResults(p => ({ ...p, [role]: "Error" }));
+    } finally {
+      setTesting(p => ({ ...p, [role]: false }));
+    }
+  }
+
+  function saveAll() {
+    const roles = Object.entries(roleEdits).map(([role, model]) => ({ role, model }));
+    saveRolesMut.mutate(roles);
+  }
+
+  const installed = data?.installedModels ?? [];
+
+  return (
+    <Card>
+      <SectionHeader title="Model Roles" />
+      <div className="p-4 space-y-3">
+        {isLoading && <div className="text-xs" style={{ color: "var(--color-muted)" }}>Loading roles…</div>}
+        {data?.roles.map(r => {
+          const current = roleEdits[r.role] ?? r.assignedModel;
+          const testRes = testResults[r.role];
+          return (
+            <div key={r.role} className="flex items-center gap-3">
+              <div className="w-32 shrink-0">
+                <div className="text-xs font-medium" style={{ color: "var(--color-foreground)" }}>{r.label}</div>
+                <div className="text-xs" style={{ color: "var(--color-muted)" }}>{r.role}</div>
+              </div>
+              <select
+                value={current}
+                onChange={e => setRoleEdits(p => ({ ...p, [r.role]: e.target.value }))}
+                className="flex-1 px-2 py-1.5 rounded-lg text-xs font-mono"
+                style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: `1px solid ${r.isValid ? "var(--color-border)" : "var(--color-warn)"}` }}>
+                {installed.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+                {!installed.includes(current) && <option value={current}>{current} (not installed)</option>}
+              </select>
+              <button
+                disabled={testing[r.role]}
+                onClick={() => void testRole(r.role, current)}
+                className="px-2.5 py-1.5 rounded-lg text-xs shrink-0"
+                style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+                {testing[r.role] ? "…" : "Test"}
+              </button>
+              {testRes && (
+                <span className="text-xs shrink-0" style={{ color: testRes === "OK" ? "var(--color-success)" : "var(--color-error)" }}>
+                  {testRes}
+                </span>
+              )}
+              {r.warning && !testRes && (
+                <span className="text-xs shrink-0" style={{ color: "var(--color-warn)" }} title={r.warning}>⚠</span>
+              )}
+            </div>
+          );
+        })}
+        {data?.roles && data.roles.length > 0 && (
+          <button
+            onClick={saveAll}
+            disabled={saveRolesMut.isPending}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium mt-2"
+            style={{ background: "var(--color-accent)", color: "#fff", opacity: saveRolesMut.isPending ? 0.6 : 1 }}>
+            <Save size={12} /> {saveRolesMut.isPending ? "Saving…" : "Save Roles"}
+          </button>
+        )}
+      </div>
+    </Card>
   );
 }
 

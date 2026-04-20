@@ -176,9 +176,23 @@ function ThemeWatcher() {
   });
 
   useEffect(() => {
-    const theme = data?.settings?.theme ?? "dark";
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [data?.settings?.theme]);
+    const settings = data?.settings;
+    const preset = settings?.themePreset ?? settings?.theme ?? "dark";
+    document.documentElement.setAttribute("data-theme", preset);
+
+    // Apply per-variable overrides on top of preset
+    const overrides = settings?.themeOverrides ?? {};
+    for (const [prop, val] of Object.entries(overrides)) {
+      document.documentElement.style.setProperty(prop, val);
+    }
+    // Clear overrides that are no longer present (reset to CSS)
+    const allVars = ["--color-background","--color-surface","--color-elevated","--color-border",
+      "--color-foreground","--color-muted","--color-accent","--color-accent-dim",
+      "--color-success","--color-warn","--color-error","--color-info"];
+    for (const v of allVars) {
+      if (!overrides[v]) document.documentElement.style.removeProperty(v);
+    }
+  }, [data?.settings?.themePreset, data?.settings?.theme, data?.settings?.themeOverrides]);
 
   return null;
 }

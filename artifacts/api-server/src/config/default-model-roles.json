@@ -1,12 +1,10 @@
 {
-  "reasoning":      "deepseek-v3-16b",
-  "chat":           "llama3.1:8b",
-  "deep-reasoning": "deepseek-r1-distill-qwen-14b",
-  "primary-coding": "qwen3-coder:30b",
-  "fast-coding":    "qwen2.5-coder:7b",
-  "autocomplete":   "qwen2.5-coder:1.5b",
-  "vision":         "llava:v1.6",
-  "stt":            "faster-whisper-large-v3",
-  "imagegen":       "flux.1-schnell",
-  "embedding":      "nomic-embed-text"
+  "reasoning":       "deepseek-r1:8b",
+  "chat":            "qwen2.5-coder:7b",
+  "deep-reasoning":  "deepseek-r1:8b",
+  "primary-coding":  "qwen3-coder:30b",
+  "fast-coding":     "qwen2.5-coder:7b",
+  "autocomplete":    "qwen2.5-coder:1.5b",
+  "vision":          "qwen2.5-coder:7b",
+  "embedding":       "nomic-embed-text"
 }

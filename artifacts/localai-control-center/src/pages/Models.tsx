@@ -321,6 +321,32 @@ function CatalogTab({ onPull }: { onPull: (name: string) => void }) {
   const [noveltyFilter, setNoveltyFilter] = useState<string>("all");
   const [vramFilter, setVramFilter] = useState(false);
   const [search, setSearch] = useState("");
+  const [pullingStack, setPullingStack] = useState(false);
+
+  const rolesQ = useQuery({
+    queryKey: ["model-roles"],
+    queryFn: () => api.models.roles(),
+    staleTime: 60_000,
+  });
+
+  const installedNames = new Set((rolesQ.data?.installedModels ?? []) as string[]);
+
+  async function pullAllStack() {
+    if (!rolesQ.data) return;
+    const missing = rolesQ.data.roles
+      .map(r => r.assignedModel)
+      .filter(m => !installedNames.has(m) && m);
+    if (missing.length === 0) return;
+    setPullingStack(true);
+    try {
+      for (const model of missing) {
+        await api.models.pull(model);
+        await new Promise<void>(r => setTimeout(r, 500));
+      }
+    } finally {
+      setPullingStack(false);
+    }
+  }
 
   const catalogQ = useQuery({
     queryKey: ["catalog"],
@@ -425,9 +451,20 @@ function CatalogTab({ onPull }: { onPull: (name: string) => void }) {
           }}>
           <Filter size={11} /> Fits in VRAM
         </button>
-        <span className="ml-auto text-xs" style={{ color: "var(--color-muted)" }}>
-          {filtered.length} / {cards.length} models
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs" style={{ color: "var(--color-muted)" }}>
+            {filtered.length} / {cards.length} models
+          </span>
+          {rolesQ.data && (
+            <button
+              disabled={pullingStack}
+              onClick={() => void pullAllStack()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+              style={{ background: "var(--color-accent)", color: "#fff", opacity: pullingStack ? 0.6 : 1 }}>
+              <Download size={11} /> {pullingStack ? "Pulling Stack…" : "Pull All My Stack"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Card grid */}
@@ -439,11 +476,19 @@ function CatalogTab({ onPull }: { onPull: (name: string) => void }) {
             const vc      = vramColor(card.vramEstimateGb, freeVramGb, totalVramGb);
             return (
               <div key={card.spec} className="rounded-xl p-4 flex flex-col gap-2"
-                style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+                style={{
+                  background: "var(--color-surface)",
+                  border: `1px solid ${card.vramEstimateGb !== undefined ? `color-mix(in srgb, ${vc} 20%, var(--color-border))` : "var(--color-border)"}`,
+                }}>
                 {/* Name + badges */}
                 <div className="flex items-start gap-2 flex-wrap">
                   <span className="font-mono font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>
-                    {card.modelName}:{card.tag}
+                    {card.modelName}
+                  </span>
+                  {/* Size chip */}
+                  <span className="text-xs px-1.5 py-0.5 rounded-full font-mono font-bold"
+                    style={{ background: `color-mix(in srgb, ${vc} 18%, transparent)`, color: vc }}>
+                    {card.tag}
                   </span>
                   <span className="text-xs px-1.5 py-0.5 rounded capitalize"
                     style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
@@ -754,6 +799,23 @@ export default function ModelsPage() {
 
   return (
     <div className="flex flex-col h-screen">
+      {/* Ollama offline banner */}
+      {data && !data.ollamaReachable && (
+        <div className="flex items-center justify-between px-4 py-2 text-sm font-medium shrink-0"
+          style={{
+            background: "color-mix(in srgb, #f59e0b 12%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, #f59e0b 30%, transparent)",
+            color: "#f59e0b",
+          }}>
+          <span>Ollama is not running — start it with: <code className="font-mono">ollama serve</code></span>
+          <button
+            onClick={() => navigator.clipboard.writeText("ollama serve")}
+            className="ml-4 px-2 py-0.5 rounded text-xs font-mono"
+            style={{ background: "color-mix(in srgb, #f59e0b 20%, transparent)", border: "1px solid color-mix(in srgb, #f59e0b 40%, transparent)" }}>
+            Copy
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 shrink-0"
         style={{ borderBottom: "1px solid var(--color-border)" }}>
@@ -761,9 +823,6 @@ export default function ModelsPage() {
           <h1 className="font-bold text-lg" style={{ color: "var(--color-foreground)" }}>Models</h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>
             {data ? `${data.models.length} models · ${data.totalSizeFormatted} on disk` : "Loading…"}
-            {data && !data.ollamaReachable && (
-              <span className="ml-2" style={{ color: "var(--color-error)" }}>· Ollama offline</span>
-            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -888,7 +947,7 @@ export default function ModelsPage() {
                   RUNNING ({running.length})
                 </div>
                 <div className="space-y-2">
-                  {running.map(m => <ModelRow key={m.name} model={m} />)}
+                  {running.map(m => <ModelRow key={m.digest ?? m.name} model={m} />)}
                 </div>
               </section>
             )}
@@ -901,7 +960,7 @@ export default function ModelsPage() {
                   </div>
                 )}
                 <div className="space-y-2">
-                  {idle.map(m => <ModelRow key={m.name} model={m} />)}
+                  {idle.map(m => <ModelRow key={m.digest ?? m.name} model={m} />)}
                 </div>
               </section>
             )}

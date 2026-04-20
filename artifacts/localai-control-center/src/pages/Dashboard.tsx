@@ -7,7 +7,7 @@ import {
   HardDrive, Server, Wrench, Search, Sparkles, Play, ArrowRight,
   MonitorCheck, Wifi, WifiOff, BarChart2,
   Code2, Box, Image, FileText, BookOpen, Car, Terminal,
-  FileSearch, Printer,
+  FileSearch, Printer, Download,
 } from "lucide-react";
 import api, { type ThoughtEntry, type RepairHealthEntry, type HardwareSnapshot, type WorkspacePreset } from "../api.js";
 
@@ -853,6 +853,58 @@ function QuickLaunchPresets({ onNavigate }: { onNavigate: (p: string) => void })
   );
 }
 
+// ── Pull Stack Button ─────────────────────────────────────────────────────────
+
+function PullStackButton() {
+  const [pulling, setPulling] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const rolesQ = useQuery({
+    queryKey: ["model-roles"],
+    queryFn: () => api.models.roles(),
+    staleTime: 60_000,
+  });
+
+  const installed = new Set((rolesQ.data?.installedModels ?? []) as string[]);
+  const missing = (rolesQ.data?.roles ?? [])
+    .map(r => r.assignedModel)
+    .filter(m => m && !installed.has(m));
+
+  async function pullStack() {
+    if (missing.length === 0) { setResult("All stack models already installed!"); return; }
+    setPulling(true);
+    setResult(null);
+    try {
+      for (const model of missing) {
+        await api.models.pull(model);
+        await new Promise<void>(r => setTimeout(r, 300));
+      }
+      setResult(`Pull jobs started for: ${missing.join(", ")}`);
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : "Error");
+    } finally {
+      setPulling(false);
+      setTimeout(() => setResult(null), 6000);
+    }
+  }
+
+  if (!rolesQ.data) return null;
+
+  return (
+    <div className="space-y-1">
+      <button
+        onClick={() => void pullStack()}
+        disabled={pulling}
+        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-medium disabled:opacity-50"
+        style={{ background: "color-mix(in srgb, var(--color-info) 12%, transparent)", color: "var(--color-info)", border: "1px solid color-mix(in srgb, var(--color-info) 25%, transparent)" }}>
+        <Download size={12} />
+        {pulling ? "Pulling…" : missing.length > 0 ? `Pull ${missing.length} missing stack model${missing.length !== 1 ? "s" : ""}` : "Stack complete ✓"}
+      </button>
+      {result && <div className="text-xs px-1" style={{ color: "var(--color-muted)" }}>{result}</div>}
+    </div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -896,6 +948,23 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
+      {/* Ollama offline banner */}
+      {tags && !tags.ollamaReachable && (
+        <div className="flex items-center justify-between px-4 py-2 text-sm font-medium shrink-0"
+          style={{
+            background: "color-mix(in srgb, #f59e0b 12%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, #f59e0b 30%, transparent)",
+            color: "#f59e0b",
+          }}>
+          <span>Ollama is not running — AI features unavailable. Start it with: <code className="font-mono">ollama serve</code></span>
+          <button
+            onClick={() => navigator.clipboard.writeText("ollama serve")}
+            className="ml-4 px-2 py-0.5 rounded text-xs font-mono"
+            style={{ background: "color-mix(in srgb, #f59e0b 20%, transparent)", border: "1px solid color-mix(in srgb, #f59e0b 40%, transparent)" }}>
+            Copy
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 shrink-0"
         style={{ borderBottom: "1px solid var(--color-border)" }}>
@@ -975,6 +1044,7 @@ export default function Dashboard() {
               icon={Cpu}
               onClick={() => navigate("/models")}
             />
+            <PullStackButton />
             <button
               onClick={() => {
                 if (window.confirm("Invoke kill-switch? This will terminate all AI processes.")) {

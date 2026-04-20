@@ -331,6 +331,9 @@ export interface AppSettings {
   strictLocalMode:            boolean;
   adaptiveForegroundProfiles: boolean;
   ttsVoice:                   string;
+  // Theme customization
+  themePreset:    string;
+  themeOverrides: Record<string, string>;
 }
 
 export const system = {
@@ -703,6 +706,23 @@ export const integrations = {
   start:   (id: string) => post<{ success: boolean; output: string }>(`/integrations/${encodeURIComponent(id)}/start`),
   updates: () => get<{ updates: IntegrationUpdate[] }>("/integrations/updates"),
   update:  (id: string) => post<{ success: boolean; output: string }>(`/integrations/${encodeURIComponent(id)}/update`),
+};
+
+// ── WorldGUI (Computer-Use) ───────────────────────────────────────────────────
+
+export interface WorldGuiWindowInfo { title: string; processName: string; handle?: number; }
+
+export const worldgui = {
+  status:     () => get<{ installed: boolean; running: boolean; port: number; url: string }>("/worldgui/status"),
+  install:    () => post<{ success: boolean; output: string }>("/worldgui/install"),
+  launch:     () => post<{ success: boolean; message: string }>("/worldgui/launch"),
+  stop:       () => post<{ success: boolean; message: string }>("/worldgui/stop"),
+  screenshot: () => get<{ success: boolean; base64: string; mimeType: string; capturedAt: string }>("/worldgui/screenshot"),
+  click:      (x: number, y: number) => post<{ success: boolean; x: number; y: number }>("/worldgui/click", { x, y }),
+  type:       (text: string) => post<{ success: boolean }>("/worldgui/type", { text }),
+  keys:       (keys: string) => post<{ success: boolean }>("/worldgui/keys", { keys }),
+  focus:      (window: string) => post<{ success: boolean; window: string }>("/worldgui/focus", { window }),
+  windows:    (pattern?: string) => get<{ success: boolean; windows: WorldGuiWindowInfo[] }>(`/worldgui/windows${pattern ? `?pattern=${encodeURIComponent(pattern)}` : ""}`),
 };
 
 // ── Remote (expanded) ────────────────────────────────────────────────────────
@@ -1454,7 +1474,7 @@ export const pluginsApi = {
 export default {
   health, kernel, models, modelsExtra, chat, observability, tasks,
   system, systemExtra, workspace, workspaceExtra,
-  studios, integrations, remote, continueApi, context, intelligence,
+  studios, integrations, worldgui, remote, continueApi, context, intelligence,
   filebrowser, stack, repair, rollback, updater, usage, audit, settings,
   hardware, os, sessions, stt, tts, ragApi, webSearch,
   benchmarkApi, pinboard, tokenBudget, timeTravel, pluginsApi,

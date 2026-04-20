@@ -1008,9 +1008,9 @@ function ModelSelector({ value, onChange }: { value: string; onChange: (v: strin
             style={{ background: !value ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
             Auto-route (Supervisor)
           </button>
-          {models.map(m => (
+          {models.map((m, idx) => (
             <button
-              key={m.name}
+              key={`${m.name}-${idx}`}
               onClick={() => { onChange(m.name); setOpen(false); }}
               className="w-full text-left px-3 py-2 text-xs transition-colors hover:opacity-80"
               style={{ background: value === m.name ? "color-mix(in srgb, var(--color-accent) 15%, transparent)" : "transparent", color: "var(--color-foreground)" }}>
@@ -1272,7 +1272,9 @@ function EmptyState({
   textareaRef: React.RefObject<HTMLTextAreaElement | null>; navigate: (path: string) => void;
 }) {
   const contextQ = useQuery({ queryKey: ["context-workspaces-chat"], queryFn: () => api.context.workspaces(), staleTime: 60_000 });
+  const chatModelsQ = useQuery({ queryKey: ["chatModels"], queryFn: () => api.chat.chatModels(), staleTime: 30_000 });
   const workspaces: ContextWorkspaceSummary[] = contextQ.data?.workspaces ?? [];
+  const installedModels = chatModelsQ.data?.models ?? [];
   const hasWorkspace = workspacePath && workspaces.some(w => w.rootPath === workspacePath);
 
   const hints = hasWorkspace
@@ -1336,6 +1338,20 @@ function EmptyState({
           style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
           <Brain size={11} /> Index a workspace first → Workspace → Intelligence
         </button>
+      )}
+      {/* Installed model chips */}
+      {installedModels.length > 0 && (
+        <div className="mt-3 flex flex-col items-center gap-1.5">
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>Installed models</div>
+          <div className="flex flex-wrap gap-1.5 justify-center max-w-lg">
+            {installedModels.map(m => (
+              <span key={m.name} className="text-xs px-2.5 py-1 rounded-full font-mono"
+                style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }}>
+                {m.name}
+              </span>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1671,6 +1687,15 @@ export default function ChatPage() {
   });
   const settings = settingsData?.settings ?? null;
   const speakReplies = (settings as (typeof settings & { speakReplies?: boolean }) | null)?.speakReplies ?? false;
+
+  // Ollama reachability (for offline banner)
+  const { data: chatModelsData } = useQuery({
+    queryKey: ["chatModels"],
+    queryFn: () => api.chat.chatModels(),
+    staleTime: 15_000,
+    refetchInterval: 15_000,
+  });
+  const ollamaOffline = chatModelsData !== undefined && !chatModelsData.ollamaReachable;
 
   // ── Session bootstrap: on mount, load from URL or create new ────────────────
 
@@ -2022,6 +2047,54 @@ export default function ChatPage() {
     setMessages(prev => [...prev, userMsg]);
     setInput("");
     setStreaming(true);
+
+    // ── WorldGUI slash commands (/wg-*) ──────────────────────────────────────
+    const wgMatch = command.match(/^\/wg-(\S+)(?:\s+(.*))?$/);
+    if (wgMatch) {
+      const [, sub, args = ""] = wgMatch;
+      try {
+        let reply = "";
+        if (sub === "screenshot") {
+          const r = await api.worldgui.screenshot();
+          if (r.success) {
+            reply = `![Screenshot](data:${r.mimeType};base64,${r.base64.substring(0, 40)}…)\n*Screenshot captured at ${r.capturedAt}*`;
+            setAttachedImages(prev => [...prev, {
+              dataUrl: `data:${r.mimeType};base64,${r.base64}`,
+              base64: r.base64,
+              name: `screenshot-${Date.now()}.png`,
+            }]);
+          } else reply = "Screenshot failed.";
+        } else if (sub === "click") {
+          const [xStr, yStr] = args.trim().split(/\s+/);
+          const x = parseInt(xStr ?? ""), y = parseInt(yStr ?? "");
+          if (isNaN(x) || isNaN(y)) {
+            reply = "Usage: /wg-click X Y";
+          } else {
+            const r = await api.worldgui.click(x, y);
+            reply = r.success ? `Clicked at (${x}, ${y}).` : "Click failed.";
+          }
+        } else if (sub === "type") {
+          const r = await api.worldgui.type(args);
+          reply = r.success ? `Typed: "${args}"` : "Type failed.";
+        } else if (sub === "focus") {
+          const r = await api.worldgui.focus(args.trim());
+          reply = r.success ? `Focused window: "${args.trim()}"` : `Window not found: "${args.trim()}"`;
+        } else if (sub === "windows") {
+          const r = await api.worldgui.windows(args.trim() || undefined);
+          if (r.windows.length === 0) reply = "No windows found.";
+          else reply = "**Open windows:**\n" + r.windows.map(w => `- **${w.title || "(no title)"}** (${w.processName})`).join("\n");
+        } else {
+          reply = `Unknown WorldGUI command: /wg-${sub}\nAvailable: /wg-screenshot, /wg-click X Y, /wg-type TEXT, /wg-focus TITLE, /wg-windows`;
+        }
+        setMessages(prev => [...prev, { role: "assistant", content: reply }]);
+      } catch (err) {
+        setMessages(prev => [...prev, { role: "assistant", content: `WorldGUI error: ${err instanceof Error ? err.message : String(err)}` }]);
+      } finally {
+        setStreaming(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch("/api/chat/command", {
         method: "POST",
@@ -2230,6 +2303,23 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-screen">
+      {/* Ollama offline banner */}
+      {ollamaOffline && (
+        <div className="flex items-center justify-between px-4 py-2 text-sm font-medium shrink-0"
+          style={{
+            background: "color-mix(in srgb, #f59e0b 12%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, #f59e0b 30%, transparent)",
+            color: "#f59e0b",
+          }}>
+          <span>Ollama is not running — chat is unavailable. Start it with: <code className="font-mono">ollama serve</code></span>
+          <button
+            onClick={() => navigator.clipboard.writeText("ollama serve")}
+            className="ml-4 px-2 py-0.5 rounded text-xs font-mono"
+            style={{ background: "color-mix(in srgb, #f59e0b 20%, transparent)", border: "1px solid color-mix(in srgb, #f59e0b 40%, transparent)" }}>
+            Copy
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 shrink-0"
         style={{ borderBottom: "1px solid var(--color-border)" }}>

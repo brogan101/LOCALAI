@@ -30,6 +30,7 @@ import pinboard from "./pinboard.js";
 import tokenBudget from "./token-budget.js";
 import timetravel from "./timetravel.js";
 import plugins from "./plugins.js";
+import worldgui from "./worldgui.js";
 
 const router = Router();
 
@@ -64,5 +65,6 @@ router.use(pinboard);
 router.use(tokenBudget);
 router.use(timetravel);
 router.use(plugins);
+router.use(worldgui);
 
 export default router;

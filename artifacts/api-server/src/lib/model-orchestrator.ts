@@ -494,7 +494,8 @@ export async function routeModelForMessages(
   hint?: RoutingHint,
 ): Promise<RouteDecision> {
   const [tags, roles] = await Promise.all([getUniversalGatewayTags(), loadRoleAssignments()]);
-  if (!tags.ollamaReachable || tags.models.length === 0) throw new Error("Ollama is not reachable or no models are installed.");
+  if (!tags.ollamaReachable) throw new Error("Ollama is not running. Start it with: ollama serve");
+  if (tags.models.length === 0) throw new Error("No models installed. Pull one first: ollama pull qwen2.5-coder:7b");
 
   // Use supervisor's pre-computed intent when available — avoids duplicate work.
   const intent = hint?.supervisorIntent ?? inferIntentFromMessages(messages);
@@ -509,7 +510,12 @@ export async function routeModelForMessages(
     if (a.allowed) { selected = candidate; admission = a; break; }
     if (candidate.estimatedRuntimeBytes < selected.estimatedRuntimeBytes) { selected = candidate; admission = a; }
   }
-  if (!admission.allowed) throw new Error(`VRAM Guard blocked all installed candidates for ${intent}. Smallest available model is ${selected.name} but it still exceeds the ${tags.vramGuard.mode} budget.`);
+  if (!admission.allowed) {
+    // Fall back to smallest model rather than throwing — VRAM estimate may be wrong.
+    const smallest = [...ordered].sort((a, b) => a.estimatedRuntimeBytes - b.estimatedRuntimeBytes)[0];
+    if (smallest) { selected = smallest; admission = { ...admission, allowed: true, reason: "vram-fallback" }; }
+    else throw new Error(`VRAM Guard blocked all candidates for ${intent}. Smallest: ${selected.name}.`);
+  }
   const switched = !!requestedModel && !matchesModel(selected, requestedModel);
   const hintNote = hint?.supervisorIntent ? ` (supervisor pre-classified as ${hint.supervisorIntent})` : "";
   const reason   = switched
