@@ -16,12 +16,12 @@ import {
 } from "../lib/model-orchestrator.js";
 import { stateOrchestrator } from "../lib/state-orchestrator.js";
 import { discoverVerifiedModels, verifyOllamaModelSpec } from "../lib/model-discovery.js";
-import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { taskQueue } from "../lib/task-queue.js";
 import { db } from "../db/database.js";
 import { modelPullHistory } from "../db/schema.js";
 import { desc, eq } from "drizzle-orm";
 import { modelRolesService } from "../lib/model-roles-service.js";
+import type { ModelRole } from "../config/models.config.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
@@ -33,7 +33,7 @@ const ROLE_DEFINITIONS = [
   { role: "fast-coding", label: "Fast Coding", description: "Smaller/faster model for quick edits and completions" },
   { role: "autocomplete", label: "Autocomplete", description: "Inline tab-complete — smallest fastest model" },
   { role: "reasoning", label: "Reasoning / Debugging", description: "Deep thinking model for complex debugging" },
-  { role: "embeddings", label: "Embeddings", description: "Semantic search and indexing" },
+  { role: "embedding", label: "Embeddings", description: "Semantic search and indexing" },
   { role: "chat", label: "Chat / Research", description: "General purpose chat and research" },
   { role: "vision", label: "Vision (optional)", description: "Multimodal model for image understanding" },
 ];
@@ -75,9 +75,21 @@ async function loadRoles(): Promise<Record<string, string>> {
   return modelRolesService.getRoles();
 }
 
+function normalizeRole(role: string): ModelRole | null {
+  if (role === "embeddings") return "embedding";
+  const knownRoles = new Set<ModelRole>([
+    "reasoning", "chat", "deep-reasoning", "primary-coding", "fast-coding",
+    "autocomplete", "vision", "stt", "imagegen", "embedding",
+  ]);
+  return knownRoles.has(role as ModelRole) ? role as ModelRole : null;
+}
+
 async function saveRoles(roles: Record<string, string>): Promise<void> {
-  await writeManagedJson(modelRolesService.filePath, roles);
-  modelRolesService.invalidate();
+  for (const [role, modelName] of Object.entries(roles)) {
+    const normalizedRole = normalizeRole(role);
+    if (!normalizedRole) continue;
+    await modelRolesService.setRole(normalizedRole, modelName);
+  }
 }
 
 async function loadModelStateHints(): Promise<Record<string, any>> {

@@ -12,9 +12,13 @@
  *   4. null
  */
 
+import { createRequire } from "module";
 import { fetchJson } from "./runtime.js";
 import { thoughtLog } from "./thought-log.js";
 import { inferAffinityFromName, type ModelRole } from "../config/models.config.js";
+
+const require = createRequire(import.meta.url);
+const DEFAULT_ROLE_ASSIGNMENTS = require("../config/default-model-roles.json") as Partial<Record<ModelRole, string>>;
 
 // ── Lazy DB import ────────────────────────────────────────────────────────────
 
@@ -45,6 +49,28 @@ async function loadRolesFromDb(): Promise<Record<string, string>> {
     const roles: Record<string, string> = {};
     for (const r of rows) {
       roles[r.role] = r.model_name;
+    }
+    if (rows.length === 0) {
+      const seededAt = new Date().toISOString();
+      const defaults = Object.entries(DEFAULT_ROLE_ASSIGNMENTS)
+        .filter((entry): entry is [ModelRole, string] => typeof entry[1] === "string" && entry[1].trim().length > 0);
+      const insertDefault = sqlite.prepare(`
+        INSERT OR IGNORE INTO role_assignments (role, model_name, updated_at)
+        VALUES (?, ?, ?)
+      `);
+      const seedDefaults = sqlite.transaction((entries: Array<[ModelRole, string]>) => {
+        for (const [role, modelName] of entries) {
+          insertDefault.run(role, modelName, seededAt);
+          roles[role] = modelName;
+        }
+      });
+      seedDefaults(defaults);
+      thoughtLog.publish({
+        level:    "info",
+        category: "config",
+        title:    "Model Roles Seeded",
+        message:  `Seeded ${defaults.length} default model role assignments`,
+      });
     }
     cache = { roles, loadedAt: now };
     return roles;
