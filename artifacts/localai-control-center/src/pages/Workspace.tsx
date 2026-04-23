@@ -9,6 +9,7 @@ import {
   File, Terminal, Share2,
 } from "lucide-react";
 import api, {
+  apiErrorMessage,
   type ContextWorkspaceSummary,
   type ContextSearchFile,
   type RefactorPlan,
@@ -16,6 +17,8 @@ import api, {
   type RefactorStep,
   type FilebrowserEntry,
 } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Types (local — backend returns `unknown[]` but we know the shape) ─────────
 
@@ -1041,6 +1044,9 @@ export default function WorkspacePage() {
   const [showCreate, setShowCreate] = useState(false);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<Record<string, string>>({});
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const projectsQ = useQuery({
     queryKey: ["workspace-projects"],
@@ -1078,7 +1084,7 @@ export default function WorkspacePage() {
       const r = await api.workspaceExtra.openProject(id, mode);
       setMsg(id, r.message);
     } catch (e) {
-      setMsg(id, e instanceof Error ? e.message : "Error");
+      setMsg(id, apiErrorMessage(e));
     } finally {
       setBusy(id, false);
     }
@@ -1112,7 +1118,7 @@ export default function WorkspacePage() {
       const snap = r.snapshot as { label?: string; createdAt?: string } | null;
       setMsg(id, snap ? `Snapshot created${snap.label ? `: ${snap.label}` : ""}` : "Snapshot created");
     } catch (e) {
-      setMsg(id, e instanceof Error ? e.message : "Snapshot failed");
+      setMsg(id, apiErrorMessage(e, "Snapshot failed"));
     } finally {
       setBusy(id, false);
     }
@@ -1125,7 +1131,7 @@ export default function WorkspacePage() {
       const r = await api.workspaceExtra.archiveProject(id);
       setMsg(id, `Archived: ${r.archivePath}`);
     } catch (e) {
-      setMsg(id, e instanceof Error ? e.message : "Archive failed");
+      setMsg(id, apiErrorMessage(e, "Archive failed"));
     } finally {
       setBusy(id, false);
     }
@@ -1141,7 +1147,7 @@ export default function WorkspacePage() {
       setMsg(id, `Cloned${proj?.name ? ` as ${proj.name}` : ""}`);
       void qc.invalidateQueries({ queryKey: ["workspace-projects"] });
     } catch (e) {
-      setMsg(id, e instanceof Error ? e.message : "Clone failed");
+      setMsg(id, apiErrorMessage(e, "Clone failed"));
     } finally {
       setBusy(id, false);
     }
@@ -1178,7 +1184,7 @@ npm run dev
       await api.system.sovereignEdit(`${projectPath}/README.md`, readme);
       setMsg(id, "GitHub package created: .gitignore + README.md");
     } catch (e) {
-      setMsg(id, e instanceof Error ? e.message : "Git package failed");
+      setMsg(id, apiErrorMessage(e, "Git package failed"));
     } finally {
       setBusy(id, false);
     }
@@ -1282,6 +1288,17 @@ npm run dev
 
           {projectsQ.isLoading && (
             <div className="text-sm text-center py-12" style={{ color: "var(--color-muted)" }}>Loading projects…</div>
+          )}
+          {(execDisabled || editsDisabled) && (
+            <div className="space-y-2">
+              {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
+              {execDisabled && <PermissionNotice permission="allowAgentExec" />}
+            </div>
+          )}
+          {createMut.error && (
+            <div className="text-xs" style={{ color: "var(--color-error)" }}>
+              {apiErrorMessage(createMut.error, "Project creation failed")}
+            </div>
           )}
 
           {/* Pinned */}

@@ -18,6 +18,7 @@ import {
   validateDistributedToken,
   rotateDistributedAuthToken,
 } from "../lib/network-proxy.js";
+import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const REMOTE_DIR = path.join(toolsRoot(), "remote");
@@ -121,7 +122,7 @@ router.get("/remote/network", async (_req, res) => {
   return res.json({ config, heartbeat });
 });
 
-router.put("/remote/network", async (req, res) => {
+router.put("/remote/network", agentExecGuard("update remote network routing"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const config = await updateDistributedNodeConfig({
     mode: body.mode === "remote" ? "remote" : body.mode === "local" ? "local" : undefined,
@@ -176,12 +177,12 @@ router.get("/remote/auth/status", async (req, res) => {
   return res.json({ authorized });
 });
 
-router.post("/remote/auth/rotate", async (_req, res) => {
+router.post("/remote/auth/rotate", agentExecGuard("rotate remote auth token"), async (_req, res) => {
   const token = await rotateDistributedAuthToken();
   return res.json({ success: true, token });
 });
 
-router.post("/remote/generate-configs", async (req, res) => {
+router.post("/remote/generate-configs", agentEditsGuard("generate remote stack config files"), async (req, res) => {
   const incoming = req.body;
   const settings = { ...await loadSettings(), ...incoming };
   const distributedNode = await getDistributedNodeConfig();

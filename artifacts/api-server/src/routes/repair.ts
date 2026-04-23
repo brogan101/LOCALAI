@@ -18,6 +18,7 @@ import {
 import { writeManagedJson, writeManagedFile } from "../lib/snapshot-manager.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { modelRolesService } from "../lib/model-roles-service.js";
+import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const HOME = os.homedir();
@@ -292,7 +293,7 @@ router.get("/repair/health", async (_req, res) => {
   });
 });
 
-router.post("/repair/run", async (req, res) => {
+router.post("/repair/run", agentExecGuard("run repair actions"), async (req, res) => {
   const { ids, mode = "selective" } = req.body;
   let targetIds: string[] = ids || [];
   if (mode === "all-broken" || mode === "all") {
@@ -536,7 +537,7 @@ router.post("/repair/detect-project-context", async (req, res) => {
   });
 });
 
-router.post("/repair/setup-project-ai", async (req, res) => {
+router.post("/repair/setup-project-ai", agentEditsGuard("set up project AI files"), agentExecGuard("set up project AI tooling"), async (req, res) => {
   const { projectPath, templateId, openVscode = true } =
     typeof req.body === "object" && req.body !== null ? req.body : {};
   if (!projectPath || !existsSync(projectPath)) return res.status(400).json({ success: false, message: "Invalid path" });

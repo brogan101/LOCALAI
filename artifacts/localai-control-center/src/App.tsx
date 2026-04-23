@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Route, Switch, Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -23,18 +23,18 @@ import {
 import api from "./api.js";
 
 // ── Pages ─────────────────────────────────────────────────────────────────────
-import Dashboard from "./pages/Dashboard.js";
-import ChatPage from "./pages/Chat.js";
-import ModelsPage from "./pages/Models.js";
-import DiagnosticsPage from "./pages/Diagnostics.js";
-import IntegrationsPage from "./pages/Integrations.js";
-import RemotePage from "./pages/Remote.js";
-import CleanupPage from "./pages/Cleanup.js";
-import LogsPage from "./pages/Logs.js";
-import WorkspacePage from "./pages/Workspace.js";
-import StudiosPage from "./pages/Studios.js";
-import SettingsPage from "./pages/SettingsPage.js";
-import OperationsPage from "./pages/Operations.js";
+const Dashboard = lazy(() => import("./pages/Dashboard.js"));
+const ChatPage = lazy(() => import("./pages/Chat.js"));
+const ModelsPage = lazy(() => import("./pages/Models.js"));
+const DiagnosticsPage = lazy(() => import("./pages/Diagnostics.js"));
+const IntegrationsPage = lazy(() => import("./pages/Integrations.js"));
+const RemotePage = lazy(() => import("./pages/Remote.js"));
+const CleanupPage = lazy(() => import("./pages/Cleanup.js"));
+const LogsPage = lazy(() => import("./pages/Logs.js"));
+const WorkspacePage = lazy(() => import("./pages/Workspace.js"));
+const StudiosPage = lazy(() => import("./pages/Studios.js"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage.js"));
+const OperationsPage = lazy(() => import("./pages/Operations.js"));
 
 function Placeholder({ title, description }: { title: string; description?: string }) {
   return (
@@ -47,6 +47,15 @@ function Placeholder({ title, description }: { title: string; description?: stri
       <p className="text-sm max-w-sm" style={{ color: "var(--color-muted)" }}>
         {description ?? "This route does not exist."}
       </p>
+    </div>
+  );
+}
+
+function PageLoading() {
+  return (
+    <div className="flex h-full min-h-screen items-center justify-center px-8 text-sm"
+      style={{ color: "var(--color-muted)" }}>
+      Loading...
     </div>
   );
 }
@@ -246,23 +255,25 @@ function AppShell() {
       <main className="flex-1 flex flex-col min-h-screen overflow-hidden"
         style={{ marginLeft: 220, background: "var(--color-background)" }}>
         <OfflineBanner />
-        <Switch>
-          <Route path="/" component={Dashboard} />
-          <Route path="/chat" component={ChatPage} />
-          <Route path="/models" component={ModelsPage} />
-          <Route path="/workspace" component={WorkspacePage} />
-          <Route path="/studios" component={StudiosPage} />
-          <Route path="/diagnostics" component={DiagnosticsPage} />
-          <Route path="/logs" component={LogsPage} />
-          <Route path="/cleanup" component={CleanupPage} />
-          <Route path="/remote" component={RemotePage} />
-          <Route path="/integrations" component={IntegrationsPage} />
-          <Route path="/operations" component={OperationsPage} />
-          <Route path="/settings" component={SettingsPage} />
-          <Route>
-            <Placeholder title="404 — Page Not Found" description="This route does not exist." />
-          </Route>
-        </Switch>
+        <Suspense fallback={<PageLoading />}>
+          <Switch>
+            <Route path="/" component={Dashboard} />
+            <Route path="/chat" component={ChatPage} />
+            <Route path="/models" component={ModelsPage} />
+            <Route path="/workspace" component={WorkspacePage} />
+            <Route path="/studios" component={StudiosPage} />
+            <Route path="/diagnostics" component={DiagnosticsPage} />
+            <Route path="/logs" component={LogsPage} />
+            <Route path="/cleanup" component={CleanupPage} />
+            <Route path="/remote" component={RemotePage} />
+            <Route path="/integrations" component={IntegrationsPage} />
+            <Route path="/operations" component={OperationsPage} />
+            <Route path="/settings" component={SettingsPage} />
+            <Route>
+              <Placeholder title="404 — Page Not Found" description="This route does not exist." />
+            </Route>
+          </Switch>
+        </Suspense>
       </main>
     </div>
   );

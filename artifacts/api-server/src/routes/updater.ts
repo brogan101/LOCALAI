@@ -8,6 +8,7 @@ import { ollamaReachable, fetchJson, isWindows, toolsRoot, ensureDir } from "../
 import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { modelRolesService } from "../lib/model-roles-service.js";
+import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -218,7 +219,7 @@ router.post("/updater/check", async (req, res) => {
   return res.json({ success: true, results, totalUpdates, checkedAt: manifest.generatedAt });
 });
 
-router.post("/updater/update", async (req, res) => {
+router.post("/updater/update", agentExecGuard("run updater"), async (req, res) => {
   const { ids, type } = req.body;
   if (!ids?.length) return res.status(400).json({ success: false, message: "ids required" });
   const manifest = await loadManifest();
@@ -252,8 +253,8 @@ router.post("/updater/update", async (req, res) => {
   return res.json({ success: true, launched, message: `Update started for: ${launched.join(", ")}` });
 });
 
-router.post("/updater/rollback/:modelName", async (req, res) => {
-  const modelName = decodeURIComponent(req.params.modelName);
+router.post("/updater/rollback/:modelName", agentEditsGuard((req) => `prepare rollback for model ${String(req.params.modelName)}`), async (req, res) => {
+  const modelName = decodeURIComponent(String(req.params.modelName));
   const manifest = await loadManifest();
   const states = await loadModelStates();
   const entry = manifest.models[modelName];
@@ -289,8 +290,8 @@ router.get("/updater/model-states", async (_req, res) => {
   return res.json({ states });
 });
 
-router.patch("/updater/model-states/:modelName", async (req, res) => {
-  const modelName = decodeURIComponent(req.params.modelName);
+router.patch("/updater/model-states/:modelName", agentEditsGuard((req) => `update lifecycle state for model ${String(req.params.modelName)}`), async (req, res) => {
+  const modelName = decodeURIComponent(String(req.params.modelName));
   const { lifecycle, lastError } = req.body;
   const states = await loadModelStates();
   if (!states[modelName]) states[modelName] = { name: modelName, lifecycle: "not-installed" };
@@ -300,7 +301,7 @@ router.patch("/updater/model-states/:modelName", async (req, res) => {
   return res.json({ success: true, state: states[modelName] });
 });
 
-router.post("/updater/backup-settings", async (_req, res) => {
+router.post("/updater/backup-settings", agentEditsGuard("backup updater settings"), async (_req, res) => {
   const backupId = `backup-${Date.now()}`;
   const backupDir = path.join(SNAPSHOTS_DIR, backupId);
   await ensureDir(backupDir);
@@ -326,7 +327,7 @@ router.get("/updater/schedule", async (_req, res) => {
   return res.json({ schedule: manifest.schedule });
 });
 
-router.put("/updater/schedule", async (req, res) => {
+router.put("/updater/schedule", agentEditsGuard("update updater schedule"), async (req, res) => {
   const manifest = await loadManifest();
   manifest.schedule = { ...manifest.schedule, ...req.body };
   await saveManifest(manifest);

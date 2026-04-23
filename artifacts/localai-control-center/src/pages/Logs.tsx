@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { RefreshCw, Filter, Radio, WifiOff, RotateCcw, ShieldAlert } from "lucide-react";
-import api, { type LogLine, type ThoughtEntry, type ActivityEntry, type BackupEntry } from "../api.js";
+import api, { apiErrorMessage, type LogLine, type ThoughtEntry, type ActivityEntry, type BackupEntry } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -105,6 +107,8 @@ const AUDIT_TITLES = [
 
 function AuditTab({ filter }: { filter: string }) {
   const qc = useQueryClient();
+  const permissions = useAgentPermissions();
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const thoughtsQ = useQuery({
     queryKey: ["audit-thoughts"],
@@ -143,6 +147,12 @@ function AuditTab({ filter }: { filter: string }) {
 
   return (
     <div className="overflow-x-auto">
+      {editsDisabled && <div className="p-3"><PermissionNotice permission="allowAgentEdits" /></div>}
+      {rollbackMut.isError && (
+        <div className="px-3 pb-3 text-xs" style={{ color: "var(--color-error)" }}>
+          {apiErrorMessage(rollbackMut.error, "Rollback failed")}
+        </div>
+      )}
       <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-elevated)" }}>
@@ -177,7 +187,7 @@ function AuditTab({ filter }: { filter: string }) {
                 <td className="px-3 py-2">
                   {backupPath && filePath && (
                     <button
-                      disabled={isRollbackPending}
+                      disabled={isRollbackPending || editsDisabled}
                       onClick={() => {
                         if (window.confirm(`Rollback ${filePath}?`)) rollbackMut.mutate(filePath);
                       }}

@@ -7,7 +7,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:api-error": "tsx tests/api-error.test.ts",
+    "test:api-client": "tsx tests/api-client.test.ts",
+    "test:permission-notice": "tsx tests/permission-notice.test.ts",
+    "test:page-permissions": "tsx tests/page-permission-ssr.test.tsx",
+    "test:api": "pnpm run test:api-error && pnpm run test:api-client && pnpm run test:permission-notice && pnpm run test:page-permissions",
+    "test": "pnpm run test:api"
   },
   "dependencies": {
     "@tanstack/react-query": "5.97.0",
@@ -25,6 +31,7 @@
     "@vitejs/plugin-react": "5.2.0",
     "tailwindcss": "4.2.2",
     "typescript": "5.9.3",
+    "tsx": "4.19.4",
     "vite": "7.3.2"
   }
 }

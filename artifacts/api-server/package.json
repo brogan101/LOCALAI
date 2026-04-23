@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "cross-env PORT=3001 tsx watch src/index.ts",
     "start": "cross-env PORT=3001 tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:security": "tsx tests/security.test.ts",
+    "test:openai-compat": "tsx tests/openai-compat.test.ts",
+    "test:route-guards": "tsx tests/route-guard-coverage.test.ts",
+    "test:permission-routes": "tsx tests/permission-routes.test.ts",
+    "test": "pnpm run test:security && pnpm run test:openai-compat && pnpm run test:route-guards && pnpm run test:permission-routes"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

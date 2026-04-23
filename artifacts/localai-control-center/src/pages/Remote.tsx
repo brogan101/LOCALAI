@@ -4,7 +4,9 @@ import {
   Wifi, WifiOff, Shield, ShieldCheck, ShieldAlert, Copy, RefreshCw,
   CheckCircle, XCircle, Radio, Settings2, FileText, Loader,
 } from "lucide-react";
-import api, { type RemoteOverview, type RemoteTool, type RemoteSettings } from "../api.js";
+import api, { apiErrorMessage, type RemoteOverview, type RemoteTool, type RemoteSettings } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,6 +76,9 @@ export default function RemotePage() {
   const [tokenInput, setTokenInput] = useState("");
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [newToken, setNewToken] = useState<string | null>(null);
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const overviewQ = useQuery({
     queryKey: ["remote-overview"],
@@ -93,7 +98,7 @@ export default function RemotePage() {
       setAuthMsg(r.success ? "Authorized." : "Authorization failed.");
       void qc.invalidateQueries({ queryKey: ["remote-auth-status"] });
     },
-    onError: (e) => setAuthMsg(e instanceof Error ? e.message : "Error"),
+    onError: (e) => setAuthMsg(apiErrorMessage(e)),
   });
 
   const rotateMut = useMutation({
@@ -102,7 +107,7 @@ export default function RemotePage() {
       if (r.success) setNewToken(r.token);
       else setAuthMsg("Rotate failed.");
     },
-    onError: (e) => setAuthMsg(e instanceof Error ? e.message : "Error"),
+    onError: (e) => setAuthMsg(apiErrorMessage(e)),
   });
 
   const PORT_FIELDS = new Set<keyof RemoteSettings>(["browserIdePort", "openvscodePort", "litellmPort", "webuiPort"]);
@@ -202,6 +207,7 @@ export default function RemotePage() {
           <Card>
             <CardHeader icon={FileText} title="Generate Config Files" />
             <div className="p-4 space-y-4">
+              {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
               <p className="text-xs" style={{ color: "var(--color-muted)" }}>
                 Writes <code className="font-mono">cloudflared-config.yaml</code>,{" "}
                 <code className="font-mono">code-server.yaml</code>,{" "}
@@ -268,7 +274,7 @@ export default function RemotePage() {
               </div>
 
               <button
-                disabled={genConfigMut.isPending}
+                disabled={genConfigMut.isPending || editsDisabled}
                 onClick={() => { setConfigResult(null); genConfigMut.mutate(); }}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
                 style={{ background: "var(--color-accent)", color: "#fff", opacity: genConfigMut.isPending ? 0.6 : 1 }}>
@@ -279,7 +285,7 @@ export default function RemotePage() {
 
               {genConfigMut.isError && (
                 <div className="text-xs" style={{ color: "var(--color-error)" }}>
-                  {genConfigMut.error instanceof Error ? genConfigMut.error.message : "Failed to generate configs"}
+                  {apiErrorMessage(genConfigMut.error, "Failed to generate configs")}
                 </div>
               )}
 
@@ -353,12 +359,13 @@ export default function RemotePage() {
               </div>
 
               <button
-                disabled={rotateMut.isPending}
+                disabled={rotateMut.isPending || execDisabled}
                 onClick={() => rotateMut.mutate()}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm"
                 style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)", opacity: rotateMut.isPending ? 0.6 : 1 }}>
                 <RefreshCw size={13} /> Rotate token
               </button>
+              {execDisabled && <PermissionNotice permission="allowAgentExec" />}
 
               {authMsg && (
                 <div className="text-xs" style={{ color: "var(--color-muted)" }}>{authMsg}</div>

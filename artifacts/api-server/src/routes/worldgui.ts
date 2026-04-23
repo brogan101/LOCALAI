@@ -17,6 +17,7 @@ import {
   findWindows,
   focusWindow,
 } from "../lib/windows-system.js";
+import { agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 
@@ -38,7 +39,7 @@ router.get("/worldgui/status", async (_req, res) => {
 });
 
 // POST /worldgui/install
-router.post("/worldgui/install", async (_req, res) => {
+router.post("/worldgui/install", agentExecGuard("install WorldGUI"), async (_req, res) => {
   try {
     const { stdout, stderr } = await execCommand("pip install worldgui", 120_000);
     const installed = await wgInstalled();
@@ -49,7 +50,7 @@ router.post("/worldgui/install", async (_req, res) => {
 });
 
 // POST /worldgui/launch
-router.post("/worldgui/launch", async (_req, res) => {
+router.post("/worldgui/launch", agentExecGuard("launch WorldGUI"), async (_req, res) => {
   const installed = await wgInstalled();
   if (!installed) {
     return res.status(400).json({ success: false, message: "WorldGUI is not installed. POST /worldgui/install first." });
@@ -70,7 +71,7 @@ router.post("/worldgui/launch", async (_req, res) => {
 });
 
 // POST /worldgui/stop
-router.post("/worldgui/stop", async (_req, res) => {
+router.post("/worldgui/stop", agentExecGuard("stop WorldGUI"), async (_req, res) => {
   try {
     if (isWindows) {
       await execCommand("taskkill /F /IM worldgui.exe /T 2>nul || taskkill /F /FI \"WINDOWTITLE eq WorldGUI*\" /T 2>nul || exit 0", 8000);
@@ -84,7 +85,7 @@ router.post("/worldgui/stop", async (_req, res) => {
 });
 
 // GET /worldgui/screenshot — returns PNG as base64
-router.get("/worldgui/screenshot", async (_req, res) => {
+router.get("/worldgui/screenshot", agentExecGuard("capture desktop screenshot"), async (_req, res) => {
   try {
     const filePath = await captureScreenshot();
     const buf = await readFile(filePath);
@@ -96,7 +97,7 @@ router.get("/worldgui/screenshot", async (_req, res) => {
 });
 
 // POST /worldgui/click — { x, y }
-router.post("/worldgui/click", async (req, res) => {
+router.post("/worldgui/click", agentExecGuard("click desktop coordinates"), async (req, res) => {
   const { x, y } = req.body as { x?: number; y?: number };
   if (typeof x !== "number" || typeof y !== "number") {
     return res.status(400).json({ success: false, error: "x and y must be numbers" });
@@ -110,7 +111,7 @@ router.post("/worldgui/click", async (req, res) => {
 });
 
 // POST /worldgui/type — { text }
-router.post("/worldgui/type", async (req, res) => {
+router.post("/worldgui/type", agentExecGuard("type into desktop"), async (req, res) => {
   const { text } = req.body as { text?: string };
   if (!text) return res.status(400).json({ success: false, error: "text is required" });
   try {
@@ -122,7 +123,7 @@ router.post("/worldgui/type", async (req, res) => {
 });
 
 // POST /worldgui/keys — { keys } (raw SendKeys codes)
-router.post("/worldgui/keys", async (req, res) => {
+router.post("/worldgui/keys", agentExecGuard("send desktop keystrokes"), async (req, res) => {
   const { keys } = req.body as { keys?: string };
   if (!keys) return res.status(400).json({ success: false, error: "keys is required" });
   try {
@@ -134,7 +135,7 @@ router.post("/worldgui/keys", async (req, res) => {
 });
 
 // POST /worldgui/focus — { window }
-router.post("/worldgui/focus", async (req, res) => {
+router.post("/worldgui/focus", agentExecGuard("focus desktop window"), async (req, res) => {
   const { window } = req.body as { window?: string };
   if (!window) return res.status(400).json({ success: false, error: "window title is required" });
   try {
@@ -146,7 +147,7 @@ router.post("/worldgui/focus", async (req, res) => {
 });
 
 // GET /worldgui/windows — list open windows
-router.get("/worldgui/windows", async (req, res) => {
+router.get("/worldgui/windows", agentExecGuard("list desktop windows"), async (req, res) => {
   const pattern = (req.query["pattern"] as string | undefined) ?? "";
   try {
     const windows = await findWindows(pattern);

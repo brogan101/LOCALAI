@@ -4,7 +4,9 @@ import {
   CheckCircle, XCircle, Play, Square, Download, Pin, RefreshCw, ExternalLink, Info,
   Monitor, MousePointer, Keyboard, Focus, Camera, Layers, AlertTriangle,
 } from "lucide-react";
-import api, { type IntegrationEntry } from "../api.js";
+import api, { apiErrorMessage, type IntegrationEntry } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -157,6 +159,12 @@ function IntegrationCard({
               Tip: {intg.aiderTip}
             </div>
           )}
+          {intg.localAiConfig && (
+            <pre className="p-2 rounded-lg text-xs overflow-x-auto"
+              style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>
+              {JSON.stringify(intg.localAiConfig, null, 2)}
+            </pre>
+          )}
           <div className="flex gap-3">
             <a href={intg.repo} target="_blank" rel="noreferrer"
               className="flex items-center gap-1"
@@ -191,6 +199,8 @@ function IntegrationCard({
 
 function WorldGuiPanel() {
   const qc = useQueryClient();
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
   const [clickX, setClickX] = useState("");
   const [clickY, setClickY] = useState("");
   const [typeText, setTypeText] = useState("");
@@ -234,20 +244,32 @@ function WorldGuiPanel() {
   async function doClick() {
     const x = parseInt(clickX), y = parseInt(clickY);
     if (isNaN(x) || isNaN(y)) return flash("Enter valid x and y numbers");
-    const r = await api.worldgui.click(x, y);
-    flash(r.success ? `Clicked (${x}, ${y})` : "Click failed");
+    try {
+      const r = await api.worldgui.click(x, y);
+      flash(r.success ? `Clicked (${x}, ${y})` : "Click failed");
+    } catch (e) {
+      flash(apiErrorMessage(e));
+    }
   }
 
   async function doType() {
     if (!typeText) return;
-    const r = await api.worldgui.type(typeText);
-    flash(r.success ? "Typed!" : "Type failed");
+    try {
+      const r = await api.worldgui.type(typeText);
+      flash(r.success ? "Typed!" : "Type failed");
+    } catch (e) {
+      flash(apiErrorMessage(e));
+    }
   }
 
   async function doFocus() {
     if (!focusWin) return;
-    const r = await api.worldgui.focus(focusWin);
-    flash(r.success ? `Focused: ${r.window}` : "Window not found");
+    try {
+      const r = await api.worldgui.focus(focusWin);
+      flash(r.success ? `Focused: ${r.window}` : "Window not found");
+    } catch (e) {
+      flash(apiErrorMessage(e));
+    }
   }
 
   async function doScreenshot() {
@@ -256,6 +278,8 @@ function WorldGuiPanel() {
       const r = await api.worldgui.screenshot();
       if (r.success) setScreenshot(`data:${r.mimeType};base64,${r.base64}`);
       else flash("Screenshot failed");
+    } catch (e) {
+      flash(apiErrorMessage(e, "Screenshot failed"));
     } finally {
       setScreenshotLoading(false);
     }
@@ -282,7 +306,7 @@ function WorldGuiPanel() {
         <div className="flex items-center gap-2">
           {!status?.installed && (
             <button
-              disabled={installMut.isPending}
+              disabled={installMut.isPending || execDisabled}
               onClick={() => installMut.mutate()}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{ background: "var(--color-accent)", color: "#fff", opacity: installMut.isPending ? 0.6 : 1 }}>
@@ -291,7 +315,7 @@ function WorldGuiPanel() {
           )}
           {status?.installed && !status.running && (
             <button
-              disabled={launchMut.isPending}
+              disabled={launchMut.isPending || execDisabled}
               onClick={() => launchMut.mutate()}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{ background: "color-mix(in srgb, var(--color-success) 18%, transparent)", color: "var(--color-success)" }}>
@@ -300,7 +324,7 @@ function WorldGuiPanel() {
           )}
           {status?.running && (
             <button
-              disabled={stopMut.isPending}
+              disabled={stopMut.isPending || execDisabled}
               onClick={() => stopMut.mutate()}
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{ background: "color-mix(in srgb, var(--color-error) 15%, transparent)", color: "var(--color-error)" }}>
@@ -309,6 +333,12 @@ function WorldGuiPanel() {
           )}
         </div>
       </div>
+      {execDisabled && <PermissionNotice permission="allowAgentExec" />}
+      {(installMut.error || launchMut.error || stopMut.error) && (
+        <div className="text-xs" style={{ color: "var(--color-error)" }}>
+          {apiErrorMessage(installMut.error || launchMut.error || stopMut.error)}
+        </div>
+      )}
 
       {installMut.data && (
         <pre className="text-xs p-3 rounded-lg overflow-x-auto"
@@ -341,7 +371,7 @@ function WorldGuiPanel() {
                 type="number" placeholder="Y" value={clickY} onChange={e => setClickY(e.target.value)}
                 className="flex-1 px-2 py-1.5 rounded-lg text-xs font-mono"
                 style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }} />
-              <button onClick={doClick}
+              <button onClick={doClick} disabled={execDisabled}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium"
                 style={{ background: "var(--color-accent)", color: "#fff" }}>
                 Click
@@ -360,7 +390,7 @@ function WorldGuiPanel() {
                 placeholder="Text to type…" value={typeText} onChange={e => setTypeText(e.target.value)}
                 className="flex-1 px-2 py-1.5 rounded-lg text-xs"
                 style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }} />
-              <button onClick={doType}
+              <button onClick={doType} disabled={execDisabled}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium"
                 style={{ background: "var(--color-accent)", color: "#fff" }}>
                 Type
@@ -379,7 +409,7 @@ function WorldGuiPanel() {
                 placeholder="Window title…" value={focusWin} onChange={e => setFocusWin(e.target.value)}
                 className="flex-1 px-2 py-1.5 rounded-lg text-xs"
                 style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)" }} />
-              <button onClick={doFocus}
+              <button onClick={doFocus} disabled={execDisabled}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium"
                 style={{ background: "var(--color-accent)", color: "#fff" }}>
                 Focus
@@ -393,7 +423,7 @@ function WorldGuiPanel() {
             <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--color-foreground)" }}>
               <Camera size={14} /> Screenshot
             </div>
-            <button onClick={doScreenshot} disabled={screenshotLoading}
+            <button onClick={doScreenshot} disabled={screenshotLoading || execDisabled}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
               style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", opacity: screenshotLoading ? 0.6 : 1 }}>
               <Camera size={12} /> {screenshotLoading ? "Capturing…" : "Capture Screen"}
@@ -483,6 +513,8 @@ export default function IntegrationsPage() {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [tab, setTab] = useState<Tab>("all");
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
 
   const { data, isLoading } = useQuery({
     queryKey: ["integrations"],
@@ -506,7 +538,7 @@ export default function IntegrationsPage() {
       setMsg(id, r.message ?? r.output ?? (r.success ? "Done" : "Failed"));
       if (r.success) void qc.invalidateQueries({ queryKey: ["integrations"] });
     } catch (e) {
-      setMsg(id, e instanceof Error ? e.message : "Error");
+      setMsg(id, apiErrorMessage(e));
     } finally {
       setBusy(id, false);
     }
@@ -571,6 +603,7 @@ export default function IntegrationsPage() {
           {isLoading && (
             <div className="text-sm text-center py-12" style={{ color: "var(--color-muted)" }}>Loading integrations…</div>
           )}
+          {execDisabled && <PermissionNotice permission="allowAgentExec" />}
 
           {/* Pinned */}
           {pinned.length > 0 && (
@@ -581,7 +614,7 @@ export default function IntegrationsPage() {
                 {pinned.map(intg => (
                   <div key={intg.id}>
                     <IntegrationCard
-                      intg={intg} busy={busyIds.has(intg.id)}
+                      intg={intg} busy={busyIds.has(intg.id) || execDisabled}
                       onInstall={() => doAction(intg.id, () => api.integrations.install(intg.id))}
                       onStart={()   => doAction(intg.id, () => api.integrations.start(intg.id))}
                       onPin={()     => doAction(intg.id, () => api.integrations.pin(intg.id))}
@@ -608,7 +641,7 @@ export default function IntegrationsPage() {
                   {items.map(intg => (
                     <div key={intg.id}>
                       <IntegrationCard
-                        intg={intg} busy={busyIds.has(intg.id)}
+                        intg={intg} busy={busyIds.has(intg.id) || execDisabled}
                         onInstall={() => doAction(intg.id, () => api.integrations.install(intg.id))}
                         onStart={()   => doAction(intg.id, () => api.integrations.start(intg.id))}
                         onPin={()     => doAction(intg.id, () => api.integrations.pin(intg.id))}

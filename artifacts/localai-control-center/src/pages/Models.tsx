@@ -22,7 +22,9 @@ import {
   Timer,
   Star,
 } from "lucide-react";
-import api, { type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry, type BenchmarkRun } from "../api.js";
+import api, { apiErrorMessage, type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry, type BenchmarkRun } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,7 @@ function PullProgress({ onClose }: { onClose: () => void }) {
 function ModelRow({ model }: { model: ModelListItem }) {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState(false);
+  const permissions = useAgentPermissions();
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["modelList"] });
@@ -116,9 +119,11 @@ function ModelRow({ model }: { model: ModelListItem }) {
   });
 
   const busy = loadMut.isPending || stopMut.isPending || delMut.isPending;
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
+  const actionError = loadMut.error || stopMut.error || delMut.error;
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors"
+    <div className="flex flex-wrap items-center gap-3 px-4 py-3 rounded-lg transition-colors"
       style={{
         background: model.isRunning
           ? "color-mix(in srgb, var(--color-success) 6%, var(--color-surface))"
@@ -171,7 +176,7 @@ function ModelRow({ model }: { model: ModelListItem }) {
         {model.isRunning ? (
           <button
             onClick={() => stopMut.mutate()}
-            disabled={busy}
+            disabled={busy || execDisabled}
             className="flex items-center gap-1 px-2.5 py-1 rounded text-xs transition-opacity disabled:opacity-40"
             style={{ background: "color-mix(in srgb, var(--color-warn) 12%, transparent)", color: "var(--color-warn)", border: "1px solid color-mix(in srgb, var(--color-warn) 25%, transparent)" }}>
             {stopMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <Square size={11} />}
@@ -180,7 +185,7 @@ function ModelRow({ model }: { model: ModelListItem }) {
         ) : (
           <button
             onClick={() => loadMut.mutate()}
-            disabled={busy}
+            disabled={busy || execDisabled}
             className="flex items-center gap-1 px-2.5 py-1 rounded text-xs transition-opacity disabled:opacity-40"
             style={{ background: "color-mix(in srgb, var(--color-success) 12%, transparent)", color: "var(--color-success)", border: "1px solid color-mix(in srgb, var(--color-success) 25%, transparent)" }}>
             {loadMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <Play size={11} />}
@@ -192,7 +197,7 @@ function ModelRow({ model }: { model: ModelListItem }) {
           <div className="flex items-center gap-1">
             <button
               onClick={() => delMut.mutate()}
-              disabled={busy}
+              disabled={busy || execDisabled}
               className="flex items-center gap-1 px-2 py-1 rounded text-xs"
               style={{ background: "var(--color-error)", color: "#fff" }}>
               {delMut.isPending ? <Loader2 size={11} className="animate-spin" /> : "Confirm"}
@@ -205,7 +210,7 @@ function ModelRow({ model }: { model: ModelListItem }) {
         ) : (
           <button
             onClick={() => setConfirm(true)}
-            disabled={busy}
+            disabled={busy || execDisabled}
             className="p-1.5 rounded transition-opacity disabled:opacity-40"
             style={{ color: "var(--color-muted)" }}
             title="Delete model">
@@ -213,6 +218,11 @@ function ModelRow({ model }: { model: ModelListItem }) {
           </button>
         )}
       </div>
+      {actionError && (
+        <div className="basis-full text-xs mt-1" style={{ color: "var(--color-error)" }}>
+          {apiErrorMessage(actionError)}
+        </div>
+      )}
     </div>
   );
 }
@@ -222,6 +232,8 @@ function ModelRow({ model }: { model: ModelListItem }) {
 function PullModal({ onClose, initialName = "" }: { onClose: () => void; initialName?: string }) {
   const [modelName, setModelName] = useState(initialName);
   const qc = useQueryClient();
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
 
   const pullMut = useMutation({
     mutationFn: () => api.models.pull(modelName.trim()),
@@ -246,10 +258,11 @@ function PullModal({ onClose, initialName = "" }: { onClose: () => void; initial
           <code className="px-1 rounded text-xs ml-1"
             style={{ background: "var(--color-border)" }}>deepseek-coder-v2:16b</code>)
         </p>
+        {execDisabled && <PermissionNotice permission="allowAgentExec" className="mb-4" />}
         <input
           value={modelName}
           onChange={e => setModelName(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && modelName.trim()) pullMut.mutate(); }}
+          onKeyDown={e => { if (e.key === "Enter" && modelName.trim() && !execDisabled) pullMut.mutate(); }}
           placeholder="model:tag"
           className="w-full px-3 py-2 rounded-lg text-sm outline-none mb-4"
           style={{
@@ -279,13 +292,18 @@ function PullModal({ onClose, initialName = "" }: { onClose: () => void; initial
           </button>
           <button
             onClick={() => pullMut.mutate()}
-            disabled={!modelName.trim() || pullMut.isPending}
+            disabled={!modelName.trim() || pullMut.isPending || execDisabled}
             className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium disabled:opacity-40"
             style={{ background: "var(--color-accent)", color: "#fff" }}>
             {pullMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
             Pull
           </button>
         </div>
+        {pullMut.error && (
+          <div className="text-xs mt-3" style={{ color: "var(--color-error)" }}>
+            {apiErrorMessage(pullMut.error)}
+          </div>
+        )}
       </div>
     </div>
   );

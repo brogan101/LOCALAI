@@ -12,6 +12,7 @@
     "dev": "pnpm run dev:api & pnpm run dev:ui",
     "start:api": "pnpm --filter api-server start",
     "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter api-server test && pnpm --filter localai-control-center test",
     "clean": "pnpm -r exec rm -rf dist && rm -rf node_modules",
     "install:all": "pnpm install"
   }

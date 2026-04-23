@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { workspaceContextService } from "../lib/code-context.js";
+import { agentEditsGuard } from "../lib/route-guards.js";
 
 const router = Router();
 
@@ -54,7 +55,7 @@ router.get("/context/file", async (req, res) => {
   }
 });
 
-router.post("/context/read-write-verify", async (req, res) => {
+router.post("/context/read-write-verify", agentEditsGuard("apply context read-write-verify edit"), async (req, res) => {
   const { filePath, updatedContent, workspacePath } = req.body;
   if (!filePath || typeof updatedContent !== "string") {
     return res.status(400).json({ success: false, message: "filePath and updatedContent are required" });

@@ -3,6 +3,7 @@ import { readdir, readFile, stat, copyFile } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
+import { agentEditsGuard } from "../lib/route-guards.js";
 
 const router = Router();
 
@@ -108,7 +109,7 @@ router.get("/timetravel/diff", async (req, res) => {
 });
 
 // POST /timetravel/restore  — copy .bak → original
-router.post("/timetravel/restore", async (req, res) => {
+router.post("/timetravel/restore", agentEditsGuard("restore time-travel backup"), async (req, res) => {
   const body    = (req.body as Record<string, unknown>) ?? {};
   const bakPath = typeof body["bakPath"] === "string" ? body["bakPath"] : "";
   if (!bakPath || !existsSync(bakPath)) {

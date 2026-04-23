@@ -8,6 +8,48 @@
 
 const BASE = "/api";
 
+export type AgentPermission =
+  | "allowAgentExec"
+  | "allowAgentEdits"
+  | "allowAgentSelfHeal"
+  | "allowAgentRefactor";
+
+export interface ApiErrorPayload {
+  success?: false;
+  blocked?: boolean;
+  permission?: AgentPermission;
+  message?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+export class ApiError extends Error {
+  status: number;
+  payload?: ApiErrorPayload;
+
+  constructor(status: number, message: string, payload?: ApiErrorPayload) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
+function isJsonResponse(res: Response): boolean {
+  return res.headers.get("content-type")?.includes("application/json") ?? false;
+}
+
+export function isBlockedApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.payload?.blocked === true;
+}
+
+export function apiErrorMessage(error: unknown, fallback = "Request failed"): string {
+  if (isBlockedApiError(error)) return error.payload?.message || "Action blocked by agent permissions.";
+  if (error instanceof ApiError) return error.payload?.message || error.payload?.reason || error.message || fallback;
+  if (error instanceof Error) return error.message || fallback;
+  return fallback;
+}
+
 async function req<T>(
   method: string,
   path: string,
@@ -19,8 +61,12 @@ async function req<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
+    if (isJsonResponse(res)) {
+      const payload = await res.json().catch(() => undefined) as ApiErrorPayload | undefined;
+      throw new ApiError(res.status, payload?.message || payload?.reason || `HTTP ${res.status}`, payload);
+    }
     const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw new ApiError(res.status, text || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -681,6 +727,7 @@ export interface IntegrationEntry {
   version: string | null;
   localPort?: number;
   healthUrl?: string;
+  localAiConfig?: Record<string, unknown>;
   aiderTip?: string;
   installCmd: string;
   startCmd: string;

@@ -27,6 +27,11 @@ import { taskQueue } from "../lib/task-queue.js";
 import { thoughtLog } from "../lib/thought-log.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { probeHardware } from "../lib/hardware-probe.js";
+import {
+  requireAgentEdits,
+  requireAgentExec as requireExecPermission,
+  requireAgentSelfHeal,
+} from "../lib/route-guards.js";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -217,6 +222,7 @@ router.get("/system/process/status", async (_req, res) => {
 });
 
 router.post("/system/process/kill-switch", async (_req, res) => {
+  if (!await requireExecPermission(res, "invoke process kill-switch")) return;
   try {
     const result = await invokeSystemKillSwitch();
     return res.json(result);
@@ -317,6 +323,7 @@ router.get("/system/cleanup/scan", async (_req, res) => {
 });
 
 router.post("/system/cleanup/execute", async (req, res) => {
+  if (!await requireAgentEdits(res, "remove cleanup artifacts")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const artifactIds: string[] = Array.isArray(body.artifactIds) ? body.artifactIds : [];
   const removedPaths: string[] = [];
@@ -395,6 +402,7 @@ router.get("/system/setup/inspect", async (_req, res) => {
 });
 
 router.post("/system/setup/repair", async (req, res) => {
+  if (!await requireExecPermission(res, "run setup repair commands")) return;
   const { itemIds, mode } = req.body;
   const wingetMap: Record<string, string> = {
     pwsh: "Microsoft.PowerShell",
@@ -516,6 +524,7 @@ router.get("/system/storage", async (_req, res) => {
 
 // POST /system/sovereign/preview — diff preview without writing
 router.post("/system/sovereign/preview", async (req, res) => {
+  if (!await requireAgentEdits(res, "preview self-edit")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const filePath   = typeof body.filePath   === "string" ? body.filePath   : "";
   const newContent = typeof body.newContent === "string" ? body.newContent : "";
@@ -532,6 +541,7 @@ router.post("/system/sovereign/preview", async (req, res) => {
 
 // POST /system/sovereign/edit — apply a self-edit (backs up original)
 router.post("/system/sovereign/edit", async (req, res) => {
+  if (!await requireAgentEdits(res, "apply self-edit")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const filePath   = typeof body.filePath   === "string" ? body.filePath   : "";
   const newContent = typeof body.newContent === "string" ? body.newContent : "";
@@ -547,7 +557,8 @@ router.post("/system/sovereign/edit", async (req, res) => {
 });
 
 // POST /system/sovereign/restart — graceful process restart
-router.post("/system/sovereign/restart", (req, res) => {
+router.post("/system/sovereign/restart", async (req, res) => {
+  if (!await requireAgentSelfHeal(res, "restart LocalAI server")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const reason = typeof body.reason === "string" ? body.reason.trim() : "API-triggered restart";
   res.json({ success: true, message: `Server will restart in ~500 ms — ${reason}` });
@@ -565,6 +576,7 @@ router.get("/system/windows", async (req, res) => {
 
 // POST /system/windows/focus — bring a window to the foreground
 router.post("/system/windows/focus", async (req, res) => {
+  if (!await requireExecPermission(res, "focus desktop window")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
   if (!pattern) return res.status(400).json({ success: false, message: "pattern required" });
@@ -577,8 +589,8 @@ router.get("/system/macros", (_req, res) => {
   return res.json({ macros: listMacros() });
 });
 
-// POST /system/macros — register a new user macro
-router.post("/system/macros", (req, res) => {
+router.post("/system/macros", async (req, res) => {
+  if (!await requireAgentEdits(res, "register system macro")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const macro = body as unknown as Macro;
   if (!macro.name || !Array.isArray(macro.steps)) {
@@ -590,6 +602,7 @@ router.post("/system/macros", (req, res) => {
 
 // POST /system/macros/:name/run — execute a named macro
 router.post("/system/macros/:name/run", async (req, res) => {
+  if (!await requireExecPermission(res, "run system macro")) return;
   const { name } = req.params;
   const result = await runMacro(name);
   return res.json(result);
@@ -599,6 +612,7 @@ router.post("/system/macros/:name/run", async (req, res) => {
 
 // POST /system/exec/run — run an arbitrary shell command
 router.post("/system/exec/run", async (req, res) => {
+  if (!await requireExecPermission(res, "run shell command")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const command        = typeof body.command        === "string"  ? body.command.trim()  : "";
   const cwd            = typeof body.cwd            === "string"  ? body.cwd.trim()      : undefined;
@@ -625,6 +639,7 @@ router.post("/system/exec/run", async (req, res) => {
 
 // POST /system/exec/file — run a script file
 router.post("/system/exec/file", async (req, res) => {
+  if (!await requireExecPermission(res, "run script file")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const filePath  = typeof body.filePath  === "string" ? body.filePath.trim()  : "";
   const cwd       = typeof body.cwd       === "string" ? body.cwd.trim()       : undefined;
@@ -640,6 +655,8 @@ router.post("/system/exec/file", async (req, res) => {
 
 // POST /system/exec/self-heal — run a file with automatic LLM repair on failure
 router.post("/system/exec/self-heal", async (req, res) => {
+  if (!await requireExecPermission(res, "run self-healing file execution")) return;
+  if (!await requireAgentSelfHeal(res, "run self-healing file execution")) return;
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const filePath    = typeof body.filePath    === "string" ? body.filePath.trim()    : "";
   const cwd         = typeof body.cwd         === "string" ? body.cwd.trim()         : undefined;
@@ -682,12 +699,7 @@ router.get("/system/hardware", async (_req, res) => {
 // ── OS Interop routes (gated on allowAgentExec) ───────────────────────────────
 
 async function requireAgentExec(res: import("express").Response): Promise<boolean> {
-  const settings = await loadSettings();
-  if (!settings.allowAgentExec) {
-    res.status(403).json({ success: false, message: "OS interop is disabled. Enable allowAgentExec in Settings → Agent Permissions." });
-    return false;
-  }
-  return true;
+  return requireExecPermission(res, "desktop automation");
 }
 
 // GET /system/os/windows — list open windows matching optional titlePattern

@@ -18,6 +18,74 @@ import api, { type WorkspacePreset, type PresetEnterResult } from "../api.js";
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
+const UNSAFE_HTML_TAGS = new Set([
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "base",
+  "style",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+  "option",
+]);
+
+const URL_ATTRIBUTES = new Set(["href", "src", "xlink:href", "formaction"]);
+
+function isSafeUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (trimmed.startsWith("#") || trimmed.startsWith("/") || trimmed.startsWith("./") || trimmed.startsWith("../")) return true;
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    return ["http:", "https:", "mailto:"].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeRenderedHtml(html: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+  const elements: Element[] = [];
+  while (walker.nextNode()) {
+    elements.push(walker.currentNode as Element);
+  }
+
+  for (const element of elements) {
+    const tag = element.tagName.toLowerCase();
+    if (UNSAFE_HTML_TAGS.has(tag)) {
+      element.remove();
+      continue;
+    }
+
+    for (const attr of Array.from(element.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith("on") || name === "srcdoc" || name === "style") {
+        element.removeAttribute(attr.name);
+        continue;
+      }
+      if (URL_ATTRIBUTES.has(name) && !isSafeUrl(attr.value)) {
+        element.removeAttribute(attr.name);
+      }
+    }
+
+    if (tag === "a") {
+      element.setAttribute("rel", "noreferrer noopener");
+      element.setAttribute("target", "_blank");
+    }
+  }
+
+  return template.innerHTML;
+}
+
 function Btn({
   onClick, disabled = false, variant = "primary", children, className = "",
 }: {
@@ -367,7 +435,7 @@ function CodingWorkspace({
               spellCheck={false}
               className="absolute inset-0 w-full h-full px-3 py-3 text-xs font-mono resize-none outline-none"
               style={{
-                background: "var(--color-bg)",
+                background: "var(--color-background)",
                 color: "var(--color-foreground)",
                 zIndex: 2,
                 caretColor: "var(--color-accent)",
@@ -461,7 +529,7 @@ function CadWorkspace({
             onChange={e => setScadScript(e.target.value)}
             spellCheck={false}
             className="flex-1 px-3 py-3 text-xs font-mono resize-none outline-none"
-            style={{ background: "var(--color-bg)", color: "var(--color-foreground)" }}
+            style={{ background: "var(--color-background)", color: "var(--color-foreground)" }}
           />
 
           {/* G-code panel */}
@@ -494,7 +562,7 @@ function CadWorkspace({
                 value={gcodeOutput}
                 placeholder="Optimized G-code appears here…"
                 className="px-3 py-2 text-xs font-mono resize-none outline-none"
-                style={{ background: "var(--color-bg)", color: "var(--color-foreground)" }}
+                style={{ background: "var(--color-background)", color: "var(--color-foreground)" }}
               />
             </div>
           </div>
@@ -507,7 +575,7 @@ function CadWorkspace({
             Render Preview
           </div>
           <div className="flex-1 flex items-center justify-center p-4"
-            style={{ background: "var(--color-bg)" }}>
+            style={{ background: "var(--color-background)" }}>
             {renderMut.isPending && (
               <div className="text-xs text-center" style={{ color: "var(--color-muted)" }}>
                 <Loader size={20} className="animate-spin mb-2 mx-auto" />
@@ -810,9 +878,13 @@ function WritingWorkspace({
     import("marked").then(m => {
       if (!cancelled) {
         const html = m.marked.parse(markdown) as string;
-        setRendered(html);
+        setRendered(sanitizeRenderedHtml(html));
       }
-    }).catch(() => setRendered(`<pre>${markdown}</pre>`));
+    }).catch(() => {
+      const pre = document.createElement("pre");
+      pre.textContent = markdown;
+      setRendered(pre.outerHTML);
+    });
     return () => { cancelled = true; };
   }, [markdown]);
 
@@ -835,7 +907,7 @@ function WritingWorkspace({
           onChange={e => setMarkdown(e.target.value)}
           spellCheck
           className="flex-1 px-4 py-3 text-xs font-mono resize-none outline-none"
-          style={{ background: "var(--color-bg)", color: "var(--color-foreground)" }}
+          style={{ background: "var(--color-background)", color: "var(--color-foreground)" }}
         />
 
         {/* RAG drop zone */}
@@ -1171,7 +1243,7 @@ export function WorkspaceView({ preset, workspacePath, enterResult, onClose }: W
   const Icon = iconMap[preset.id] ?? Code2;
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col" style={{ background: "var(--color-bg)" }}>
+    <div className="fixed inset-0 z-40 flex flex-col" style={{ background: "var(--color-background)" }}>
       {/* Top bar */}
       <div className="flex items-center gap-3 px-4 py-2 shrink-0"
         style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)" }}>

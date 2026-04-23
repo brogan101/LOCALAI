@@ -22,6 +22,7 @@ import { modelPullHistory } from "../db/schema.js";
 import { desc, eq } from "drizzle-orm";
 import { modelRolesService } from "../lib/model-roles-service.js";
 import type { ModelRole } from "../config/models.config.js";
+import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
@@ -159,7 +160,7 @@ router.get("/models/catalog/status", (_req, res) => {
   });
 });
 
-router.post("/pull", async (req, res) => {
+router.post("/pull", agentExecGuard("pull model"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const modelName =
     typeof body.modelName === "string"
@@ -257,7 +258,7 @@ router.get("/models/roles", async (_req, res) => {
   });
 });
 
-router.put("/models/roles", async (req, res) => {
+router.put("/models/roles", agentEditsGuard("update model role assignments"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const rolesPayload = Array.isArray(body.roles) ? body.roles : [];
   const current = await loadRoles();
@@ -320,7 +321,7 @@ router.post("/models/recommend", async (req, res) => {
   return res.json({ recommendation, installed: gateway.models.map((entry: any) => entry.name) });
 });
 
-router.post("/models/pull", async (req, res) => {
+router.post("/models/pull", agentExecGuard("pull model"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const modelName = typeof body.modelName === "string" ? body.modelName.trim() : "";
   if (!modelName) {
@@ -330,7 +331,7 @@ router.post("/models/pull", async (req, res) => {
   return res.json({ success: true, message: `Pull queued: ${modelName}`, jobId: job.id });
 });
 
-router.post("/models/verify-install", async (req, res) => {
+router.post("/models/verify-install", agentExecGuard("verify and pull model"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const modelName = typeof body.modelName === "string" ? body.modelName.trim() : "";
   if (!modelName) {
@@ -354,7 +355,7 @@ router.post("/models/verify-install", async (req, res) => {
   });
 });
 
-router.post("/models/load", async (req, res) => {
+router.post("/models/load", agentExecGuard("load model into VRAM"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const modelName = typeof body.modelName === "string" ? body.modelName.trim() : "";
   if (!modelName) {
@@ -368,7 +369,7 @@ router.post("/models/load", async (req, res) => {
   }
 });
 
-router.post("/models/stop", async (req, res) => {
+router.post("/models/stop", agentExecGuard("unload model from VRAM"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const modelName = typeof body.modelName === "string" ? body.modelName.trim() : "";
   if (!modelName) {
@@ -400,8 +401,8 @@ router.get("/models/pull-status", async (_req, res) => {
   });
 });
 
-router.delete("/models/:modelName/delete", async (req, res) => {
-  const modelName = decodeURIComponent(req.params.modelName);
+router.delete("/models/:modelName/delete", agentExecGuard((req) => `delete model ${String(req.params.modelName)}`), async (req, res) => {
+  const modelName = decodeURIComponent(String(req.params.modelName));
   try {
     await deleteOllamaModel(modelName);
     return res.json({ success: true, message: `Deleted: ${modelName}` });

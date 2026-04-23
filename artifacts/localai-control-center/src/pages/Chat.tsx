@@ -11,6 +11,7 @@ import {
   Pin, PanelRight, Info, Gauge, Zap,
 } from "lucide-react";
 import api, {
+  apiErrorMessage,
   type ChatMessage, type SupervisorInfo, type ContextWorkspaceSummary,
   type AppSettings, type SelfHealResult, type RefactorPlan, type RefactorJob,
   type RefactorStep, type ChatSession, type PinboardItem, type TokenBudget,
@@ -594,6 +595,7 @@ function AgentActionCard({
   const [refactorJob, setRefactorJob] = useState<RefactorJob | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [confirmExecute, setConfirmExecute] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Fetch diff preview for EDIT actions
   const previewQ = useQuery({
@@ -619,6 +621,7 @@ function AgentActionCard({
       return;
     }
     setConfirmExecute(false);
+    setActionError(null);
     setApproving(true);
     try {
       if (action.type === "propose_edit") {
@@ -643,20 +646,27 @@ function AgentActionCard({
         setPlanLoading(false);
       }
     } catch (err) {
-      setTerminalOutput(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      const message = apiErrorMessage(err);
+      setActionError(message);
+      setTerminalOutput(`Error: ${message}`);
       setExitCode(-1);
     } finally {
       setApproving(false);
+      setSelfHealLoading(false);
+      setPlanLoading(false);
     }
   }
 
   async function handleExecuteRefactor() {
-    if (!refactorPlan) return;
+    if (!refactorPlan || isGated("allowAgentRefactor")) return;
+    setActionError(null);
     setApproving(true);
     try {
       const jobRes = await api.intelligence.executeRefactor(refactorPlan.id);
       setRefactorJob(jobRes.job);
       onApprove(action);
+    } catch (err) {
+      setActionError(apiErrorMessage(err, "Refactor execution failed"));
     } finally {
       setApproving(false);
     }
@@ -816,7 +826,8 @@ function AgentActionCard({
               <div className="text-xs" style={{ color: "var(--color-muted)" }}>{refactorPlan.impactedFiles.length} files affected</div>
               <button
                 onClick={() => void handleExecuteRefactor()}
-                disabled={approving}
+                disabled={approving || isGated("allowAgentRefactor") === true}
+                title={gateLabel("allowAgentRefactor")}
                 className="text-xs px-3 py-1 rounded"
                 style={{ background: "var(--color-accent)", color: "#fff", opacity: approving ? 0.6 : 1 }}>
                 {approving ? <Loader2 size={10} className="animate-spin inline mr-1" /> : null}
@@ -844,6 +855,11 @@ function AgentActionCard({
       )}
 
       {/* Action buttons */}
+      {actionError && (
+        <div className="px-3 pb-2 text-xs" style={{ color: "var(--color-error)" }}>
+          {actionError}
+        </div>
+      )}
       <div className="flex items-center gap-2 px-3 py-2"
         style={{ borderTop: "1px solid var(--color-border)" }}>
         {/* Approve */}
@@ -2416,16 +2432,20 @@ export default function ChatPage() {
       try {
         await api.system.sovereignEdit(filePath, content);
         setPendingActions(prev => prev.filter(a => a.id !== action.id));
+        const canRestart = settings?.allowAgentSelfHeal !== false;
         setToast({
           message: `Edit applied to ${filePath.split("/").pop()}`,
-          actionLabel: "Restart server",
-          onAction: () => {
-            void api.system.restart("sovereign-edit via agent action panel");
-            setToast(null);
-          },
+          actionLabel: canRestart ? "Restart server" : undefined,
+          onAction: canRestart
+            ? () => {
+                void api.system.restart("sovereign-edit via agent action panel")
+                  .catch((err) => setError(apiErrorMessage(err, "Restart failed")));
+                setToast(null);
+              }
+            : undefined,
         });
       } catch (err) {
-        setError(`Edit failed: ${err instanceof Error ? err.message : String(err)}`);
+        setError(`Edit failed: ${apiErrorMessage(err)}`);
       }
     } else {
       // For RUN/SELF-HEAL/REFACTOR, the card handles execution internally

@@ -8,9 +8,12 @@ import {
   Camera, Search, Clock, FileDiff, RotateCcw as Restore,
 } from "lucide-react";
 import api, {
+  apiErrorMessage,
   type StackComponent, type RepairLogEntry, type RepairHealthEntry,
   type BackupEntry, type OsWindow, type TimeTravelBackup, type TimeTravelDiff,
 } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -84,7 +87,7 @@ function Feedback({ isPending, isSuccess, isError, pendingMsg, successMsg, error
 }) {
   if (isPending) return <span className="text-xs" style={{ color: "var(--color-muted)" }}>{pendingMsg}</span>;
   if (isSuccess) return <span className="text-xs" style={{ color: "var(--color-success)" }}>{successMsg}</span>;
-  if (isError && error) return <span className="text-xs" style={{ color: "var(--color-error)" }}>{error.message}</span>;
+  if (isError && error) return <span className="text-xs" style={{ color: "var(--color-error)" }}>{apiErrorMessage(error)}</span>;
   return null;
 }
 
@@ -92,6 +95,9 @@ function Feedback({ isPending, isSuccess, isError, pendingMsg, successMsg, error
 
 function StackPanel() {
   const qc = useQueryClient();
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const stackQ = useQuery({
     queryKey: ["stack-status"],
@@ -124,7 +130,7 @@ function StackPanel() {
       <CardHeader icon={Server} title="Stack Components"
         actions={
           <div className="flex items-center gap-2">
-            <Btn onClick={() => backupMut.mutate()} disabled={backupMut.isPending}>
+            <Btn onClick={() => backupMut.mutate()} disabled={backupMut.isPending || editsDisabled}>
               <HardDrive size={11} /> {backupMut.isPending ? "Backing up…" : "Backup"}
             </Btn>
             {backupMut.isSuccess && backupMut.data?.message && (
@@ -137,6 +143,8 @@ function StackPanel() {
       />
 
       {stackQ.isLoading && <div className="p-6 text-sm text-center" style={{ color: "var(--color-muted)" }}>Loading…</div>}
+      {execDisabled && <div className="px-4 pt-3"><PermissionNotice permission="allowAgentExec" /></div>}
+      {editsDisabled && <div className="px-4 pt-3"><PermissionNotice permission="allowAgentEdits" /></div>}
 
       {components.map((c) => (
         <div key={c.id}
@@ -153,16 +161,16 @@ function StackPanel() {
           <div className="flex items-center gap-1.5">
             {busy(c.id) && <Loader2 size={13} className="animate-spin" style={{ color: "var(--color-muted)" }} />}
             {c.installed && !c.running && (
-              <Btn onClick={() => startMut.mutate(c.id)} disabled={busy(c.id)}>
+              <Btn onClick={() => startMut.mutate(c.id)} disabled={busy(c.id) || execDisabled}>
                 <Play size={10} /> Start
               </Btn>
             )}
             {c.running && (
               <>
-                <Btn onClick={() => restartMut.mutate(c.id)} disabled={busy(c.id)}>
+                <Btn onClick={() => restartMut.mutate(c.id)} disabled={busy(c.id) || execDisabled}>
                   <RotateCcw size={10} /> Restart
                 </Btn>
-                <Btn onClick={() => stopMut.mutate(c.id)} disabled={busy(c.id)} variant="danger">
+                <Btn onClick={() => stopMut.mutate(c.id)} disabled={busy(c.id) || execDisabled} variant="danger">
                   <Square size={10} /> Stop
                 </Btn>
               </>
@@ -181,7 +189,7 @@ function StackPanel() {
           )}
         </div>
         {!gh?.authenticated && (
-          <Btn onClick={() => ghAuthMut.mutate()} disabled={ghAuthMut.isPending} variant="accent">
+          <Btn onClick={() => ghAuthMut.mutate()} disabled={ghAuthMut.isPending || execDisabled} variant="accent">
             <Github size={11} /> {ghAuthMut.isPending ? "Authenticating…" : "Authenticate"}
           </Btn>
         )}
@@ -192,7 +200,7 @@ function StackPanel() {
         )}
         {ghAuthMut.isError && (
           <span className="text-xs" style={{ color: "var(--color-error)" }}>
-            {(ghAuthMut.error as Error).message}
+            {apiErrorMessage(ghAuthMut.error)}
           </span>
         )}
       </div>
@@ -205,6 +213,9 @@ function StackPanel() {
 function UpdaterPanel() {
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const manifestQ = useQuery({
     queryKey: ["updater-manifest"],
@@ -232,7 +243,7 @@ function UpdaterPanel() {
       <CardHeader icon={Download} title="Model Updater"
         actions={
           <div className="flex items-center gap-2">
-            <Btn onClick={() => backupMut.mutate()} disabled={backupMut.isPending}>
+            <Btn onClick={() => backupMut.mutate()} disabled={backupMut.isPending || editsDisabled}>
               <HardDrive size={11} /> {backupMut.isPending ? "Backing up…" : "Backup Settings"}
             </Btn>
             <Btn onClick={() => checkMut.mutate()} disabled={checkMut.isPending} variant="accent">
@@ -242,6 +253,13 @@ function UpdaterPanel() {
           </div>
         }
       />
+
+      {(execDisabled || editsDisabled) && (
+        <div className="px-4 pt-3 space-y-2">
+          {execDisabled && <PermissionNotice permission="allowAgentExec" />}
+          {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
+        </div>
+      )}
 
       {checkMut.isSuccess && (
         <div className="px-4 py-2 text-xs" style={{ color: "var(--color-success)", borderBottom: "1px solid var(--color-border)" }}>
@@ -290,12 +308,12 @@ function UpdaterPanel() {
                 </div>
                 <div className="flex items-center gap-1.5">
                   {state?.updateAvailable && (
-                    <Btn onClick={() => updateMut.mutate(name)} disabled={isUpdating} variant="accent" size="xs">
+                    <Btn onClick={() => updateMut.mutate(name)} disabled={isUpdating || execDisabled} variant="accent" size="xs">
                       {isUpdating ? <Loader2 size={10} className="animate-spin" /> : <ArrowDownToLine size={10} />}
                       {isUpdating ? "Updating…" : "Update"}
                     </Btn>
                   )}
-                  <Btn onClick={() => rollbackMut.mutate(name)} disabled={isRolling} size="xs">
+                  <Btn onClick={() => rollbackMut.mutate(name)} disabled={isRolling || editsDisabled} size="xs">
                     {isRolling ? <Loader2 size={10} className="animate-spin" /> : <RotateCcwIcon size={10} />}
                     Rollback
                   </Btn>
@@ -309,6 +327,11 @@ function UpdaterPanel() {
       {backupMut.isSuccess && backupMut.data?.backupDir && (
         <div className="px-4 py-2 text-xs" style={{ color: "var(--color-success)" }}>
           Settings backed up: {backupMut.data.backupDir}
+        </div>
+      )}
+      {(updateMut.isError || rollbackMut.isError || backupMut.isError) && (
+        <div className="px-4 py-2 text-xs" style={{ color: "var(--color-error)" }}>
+          {apiErrorMessage(updateMut.error || rollbackMut.error || backupMut.error, "Updater action failed")}
         </div>
       )}
     </Card>
@@ -362,6 +385,8 @@ function RollbackPanel() {
   const [scanBackups, setScanBackups]   = useState<BackupEntry[]>([]);
   const [listError, setListError]       = useState<string | null>(null);
   const [scanning, setScanning]         = useState(false);
+  const permissions = useAgentPermissions();
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const rollbackMut = useMutation({
     mutationFn: (fp: string) => api.rollback.rollback(fp),
@@ -374,7 +399,7 @@ function RollbackPanel() {
       const r = await api.rollback.listBackups(dirPath);
       setDirBackups(r.backups ?? []);
     } catch (e) {
-      setListError(e instanceof Error ? e.message : "Failed to list backups");
+      setListError(apiErrorMessage(e, "Failed to list backups"));
     }
   }
 
@@ -386,7 +411,7 @@ function RollbackPanel() {
       const r = await api.rollback.scanBackups(workspacePath);
       setScanBackups(r.backups ?? []);
     } catch (e) {
-      setListError(e instanceof Error ? e.message : "Scan failed");
+      setListError(apiErrorMessage(e, "Scan failed"));
     } finally {
       setScanning(false);
     }
@@ -435,7 +460,8 @@ function RollbackPanel() {
               </div>
               {listError && <div className="text-xs mt-1" style={{ color: "var(--color-error)" }}>{listError}</div>}
             </div>
-            <BackupTable backups={dirBackups} onRollback={fp => rollbackMut.mutate(fp)} rolling={rollbackMut.isPending} />
+            {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
+            <BackupTable backups={dirBackups} onRollback={fp => rollbackMut.mutate(fp)} rolling={rollbackMut.isPending || editsDisabled} />
           </>
         )}
 
@@ -465,7 +491,8 @@ function RollbackPanel() {
                 </div>
               )}
             </div>
-            <BackupTable backups={scanBackups} onRollback={fp => rollbackMut.mutate(fp)} rolling={rollbackMut.isPending} />
+            {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
+            <BackupTable backups={scanBackups} onRollback={fp => rollbackMut.mutate(fp)} rolling={rollbackMut.isPending || editsDisabled} />
           </>
         )}
 
@@ -480,7 +507,7 @@ function RollbackPanel() {
                 className="flex-1 px-3 py-1.5 rounded-lg text-sm font-mono"
                 style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
               />
-              <Btn onClick={() => rollbackMut.mutate(filePath)} disabled={!filePath.trim() || rollbackMut.isPending} variant="danger">
+              <Btn onClick={() => rollbackMut.mutate(filePath)} disabled={!filePath.trim() || rollbackMut.isPending || editsDisabled} variant="danger">
                 {rollbackMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <RotateCcwIcon size={11} />}
                 Rollback
               </Btn>
@@ -493,6 +520,7 @@ function RollbackPanel() {
               successMsg="Rollback complete"
               error={rollbackMut.error as Error | null}
             />
+            {editsDisabled && <div className="mt-2"><PermissionNotice permission="allowAgentEdits" /></div>}
           </div>
         )}
 
@@ -508,6 +536,8 @@ function RollbackPanel() {
 
 function RepairLogPanel() {
   const qc = useQueryClient();
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
 
   const logQ = useQuery({
     queryKey: ["repair-log"],
@@ -541,7 +571,7 @@ function RepairLogPanel() {
           repairable.length > 0 ? (
             <Btn
               onClick={() => repairMut.mutate(repairable.map(r => r.id))}
-              disabled={repairMut.isPending}
+              disabled={repairMut.isPending || execDisabled}
               variant="accent">
               <Wrench size={11} />
               {repairMut.isPending ? "Repairing…" : `Repair ${repairable.length} issue${repairable.length !== 1 ? "s" : ""}`}
@@ -549,6 +579,8 @@ function RepairLogPanel() {
           ) : undefined
         }
       />
+
+      {execDisabled && <div className="px-4 pt-3"><PermissionNotice permission="allowAgentExec" /></div>}
 
       {repairMut.isSuccess && (
         <div className="px-4 py-2 text-xs" style={{ color: "var(--color-success)", borderBottom: "1px solid var(--color-border)" }}>
@@ -591,17 +623,19 @@ function RepairLogPanel() {
 function SystemUpdatesPanel() {
   const [results, setResults] = useState<unknown[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
 
   const checkMut = useMutation({
     mutationFn: () => api.systemExtra.updatesCheck(),
     onSuccess: (data) => setResults(data.items ?? []),
-    onError: (e) => setError(e instanceof Error ? e.message : "Check failed"),
+    onError: (e) => setError(apiErrorMessage(e, "Check failed")),
   });
 
   const runMut = useMutation({
     mutationFn: () => api.systemExtra.updatesRun(),
     onSuccess: () => setResults(null),
-    onError: (e) => setError(e instanceof Error ? e.message : "Update failed"),
+    onError: (e) => setError(apiErrorMessage(e, "Update failed")),
   });
 
   return (
@@ -610,7 +644,7 @@ function SystemUpdatesPanel() {
         actions={
           <div className="flex items-center gap-2">
             {results && results.length > 0 && (
-              <Btn onClick={() => runMut.mutate()} disabled={runMut.isPending} variant="accent">
+              <Btn onClick={() => runMut.mutate()} disabled={runMut.isPending || execDisabled} variant="accent">
                 <ArrowDownToLine size={11} /> {runMut.isPending ? "Applying…" : "Apply Updates"}
               </Btn>
             )}
@@ -623,6 +657,7 @@ function SystemUpdatesPanel() {
       />
 
       <div className="p-4">
+        {execDisabled && <PermissionNotice permission="allowAgentExec" className="mb-3" />}
         {!results && !error && (
           <div className="text-sm" style={{ color: "var(--color-muted)" }}>
             Click Check to scan for system component updates.
@@ -691,22 +726,22 @@ function OsInteropPanel() {
   const sendKeysMut = useMutation({
     mutationFn: () => api.os.sendKeys(keysInput),
     onSuccess: () => setFeedback({ msg: "Keys sent", ok: true }),
-    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+    onError: (e) => setFeedback({ msg: apiErrorMessage(e), ok: false }),
   });
   const typeTextMut = useMutation({
     mutationFn: () => api.os.typeText(textInput),
     onSuccess: () => setFeedback({ msg: "Text typed", ok: true }),
-    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+    onError: (e) => setFeedback({ msg: apiErrorMessage(e), ok: false }),
   });
   const clickMut = useMutation({
     mutationFn: () => api.os.click(parseFloat(clickX), parseFloat(clickY)),
     onSuccess: () => setFeedback({ msg: "Click sent", ok: true }),
-    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+    onError: (e) => setFeedback({ msg: apiErrorMessage(e), ok: false }),
   });
   const screenshotMut = useMutation({
     mutationFn: () => api.os.screenshot(),
     onSuccess: r => { setScreenshot(r.base64); setFeedback({ msg: "Screenshot captured", ok: true }); },
-    onError: (e) => setFeedback({ msg: e instanceof Error ? e.message : "Error", ok: false }),
+    onError: (e) => setFeedback({ msg: apiErrorMessage(e), ok: false }),
   });
 
   const execDisabled = settingsQ.data?.settings?.allowAgentExec === false;

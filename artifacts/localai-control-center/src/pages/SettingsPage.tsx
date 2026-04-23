@@ -4,7 +4,9 @@ import {
   Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2,
   Code2, AlertCircle, DollarSign, Info,
 } from "lucide-react";
-import api, { type AppSettings, type ContinueRule, type LifetimeUsage, type RagCollection } from "../api.js";
+import api, { apiErrorMessage, type AppSettings, type ContinueRule, type LifetimeUsage, type RagCollection } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Theme presets ─────────────────────────────────────────────────────────────
 
@@ -463,6 +465,8 @@ function ModelRolesCard() {
   const qc = useQueryClient();
   const [testResults, setTestResults] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
+  const permissions = useAgentPermissions();
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const { data, isLoading } = useQuery({
     queryKey: ["model-roles"],
@@ -509,6 +513,7 @@ function ModelRolesCard() {
       <SectionHeader title="Model Roles" />
       <div className="p-4 space-y-3">
         {isLoading && <div className="text-xs" style={{ color: "var(--color-muted)" }}>Loading roles…</div>}
+        {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
         {data?.roles.map(r => {
           const current = roleEdits[r.role] ?? r.assignedModel;
           const testRes = testResults[r.role];
@@ -549,11 +554,16 @@ function ModelRolesCard() {
         {data?.roles && data.roles.length > 0 && (
           <button
             onClick={saveAll}
-            disabled={saveRolesMut.isPending}
+            disabled={saveRolesMut.isPending || editsDisabled}
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium mt-2"
             style={{ background: "var(--color-accent)", color: "#fff", opacity: saveRolesMut.isPending ? 0.6 : 1 }}>
             <Save size={12} /> {saveRolesMut.isPending ? "Saving…" : "Save Roles"}
           </button>
+        )}
+        {saveRolesMut.error && (
+          <div className="text-xs" style={{ color: "var(--color-error)" }}>
+            {apiErrorMessage(saveRolesMut.error, "Failed to save roles")}
+          </div>
         )}
       </div>
     </Card>
@@ -881,6 +891,8 @@ function ContinueRulesSection() {
   const [newFilename, setNewFilename] = useState("");
   const [newContent, setNewContent] = useState("");
   const [showNew, setShowNew] = useState(false);
+  const permissions = useAgentPermissions();
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
 
   const rulesQ = useQuery({
     queryKey: ["continue-rules"],
@@ -918,6 +930,7 @@ function ContinueRulesSection() {
     <Card>
       <SectionHeader title="Continue.dev Rules" />
       <div className="p-4 space-y-3">
+        {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
         {config && (
           <div className="flex items-center gap-2 text-xs p-2.5 rounded-lg"
             style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
@@ -957,7 +970,7 @@ function ContinueRulesSection() {
                 />
                 <div className="flex gap-2">
                   <button
-                    disabled={saveMut.isPending}
+                    disabled={saveMut.isPending || editsDisabled}
                     onClick={() => saveMut.mutate({ filename: editing.filename, content: editing.content })}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
                     style={{ background: "var(--color-accent)", color: "#fff", opacity: saveMut.isPending ? 0.6 : 1 }}>
@@ -987,7 +1000,7 @@ function ContinueRulesSection() {
                     Edit
                   </button>
                   <button
-                    disabled={deleteMut.isPending && deleteMut.variables === rule.filename}
+                    disabled={(deleteMut.isPending && deleteMut.variables === rule.filename) || editsDisabled}
                     onClick={() => { if (confirm(`Delete rule ${rule.filename}?`)) deleteMut.mutate(rule.filename); }}
                     className="p-1 rounded"
                     style={{ background: "color-mix(in srgb, var(--color-error) 10%, transparent)", color: "var(--color-error)" }}>
@@ -1024,7 +1037,7 @@ function ContinueRulesSection() {
             </div>
             <div className="flex gap-2">
               <button
-                disabled={!newFilename || !newContent || saveMut.isPending}
+                disabled={!newFilename || !newContent || saveMut.isPending || editsDisabled}
                 onClick={() => saveMut.mutate({ filename: newFilename, content: newContent })}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
                 style={{ background: "var(--color-accent)", color: "#fff", opacity: (!newFilename || !newContent || saveMut.isPending) ? 0.5 : 1 }}>
@@ -1040,10 +1053,16 @@ function ContinueRulesSection() {
         ) : (
           <button
             onClick={() => setShowNew(true)}
+            disabled={editsDisabled}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
-            style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)", opacity: editsDisabled ? 0.5 : 1 }}>
             <Plus size={11} /> Add rule
           </button>
+        )}
+        {(saveMut.error || deleteMut.error) && (
+          <div className="text-xs" style={{ color: "var(--color-error)" }}>
+            {apiErrorMessage(saveMut.error || deleteMut.error, "Rule update failed")}
+          </div>
         )}
       </div>
     </Card>

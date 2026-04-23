@@ -13,6 +13,7 @@ import {
   ensureDir,
 } from "../lib/runtime.js";
 import { writeManagedJson } from "../lib/snapshot-manager.js";
+import { agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
@@ -30,6 +31,7 @@ interface Integration {
   packageId?: string;
   localPort?: number;
   healthUrl?: string;
+  localAiConfig?: Record<string, unknown>;
   aiderTip?: string;
   usedFor: string;
   docs: string;
@@ -53,6 +55,11 @@ const INTEGRATIONS: Integration[] = [
     startCmd: isWindows ? 'start "Open WebUI" cmd /k "open-webui serve"' : "open-webui serve",
     updateCmd: "pip install --upgrade open-webui",
     docs: "https://docs.openwebui.com", usedFor: "Main chat UI, RAG, model management, team workspaces",
+    localAiConfig: {
+      openAiApiBaseUrl: "http://localhost:3001/v1",
+      openAiApiKey: "localai",
+      supportedEndpoints: ["/v1/models", "/v1/chat/completions", "/v1/embeddings", "/v1/responses"],
+    },
   },
   {
     id: "open-webui-pipelines", name: "Open WebUI Pipelines", repo: "https://github.com/open-webui/pipelines", category: "core",
@@ -77,7 +84,12 @@ const INTEGRATIONS: Integration[] = [
     startCmd: isWindows ? `start "LiteLLM" cmd /k "litellm --model ollama/qwen2.5-coder:7b --port 4000"` : "litellm --model ollama/qwen2.5-coder:7b --port 4000",
     updateCmd: 'pip install --upgrade "litellm[proxy]"',
     docs: "https://docs.litellm.ai", usedFor: "Unified model gateway, Aider integration, Continue integration, cost tracking",
-    aiderTip: "Once LiteLLM is running: aider --model openai/<model-name> --openai-api-base http://localhost:4000",
+    aiderTip: "Direct LocalAI endpoint: aider --model openai/<model-name> --openai-api-base http://localhost:3001/v1 --openai-api-key localai",
+    localAiConfig: {
+      directBaseUrl: "http://localhost:3001/v1",
+      proxyBaseUrl: "http://localhost:4000",
+      exampleCommand: "litellm --model openai/qwen2.5-coder:7b --api_base http://localhost:3001/v1 --api_key localai --port 4000",
+    },
   },
   {
     id: "mcpo", name: "MCPO (MCP→OpenAPI)", repo: "https://github.com/open-webui/mcpo", category: "core",
@@ -98,6 +110,11 @@ const INTEGRATIONS: Integration[] = [
     running: async () => false,
     installCmd: "pip install aider-chat", startCmd: "aider", updateCmd: "pip install --upgrade aider-chat",
     docs: "https://aider.chat/docs", usedFor: "Repo-level code editing, architect mode, multi-file changes",
+    localAiConfig: {
+      baseUrl: "http://localhost:3001/v1",
+      apiKey: "localai",
+      exampleCommand: "aider --model openai/qwen2.5-coder:7b --openai-api-base http://localhost:3001/v1 --openai-api-key localai",
+    },
   },
   {
     id: "continue", name: "Continue (VS Code)", repo: "https://github.com/continuedev/continue", category: "coding",
@@ -108,6 +125,12 @@ const INTEGRATIONS: Integration[] = [
     running: async () => false,
     installCmd: "code --install-extension Continue.continue", startCmd: "", updateCmd: "code --install-extension Continue.continue",
     docs: "https://docs.continue.dev", usedFor: "VS Code inline completions, codebase chat, rule packs",
+    localAiConfig: {
+      provider: "openai",
+      apiBase: "http://localhost:3001/v1",
+      apiKey: "localai",
+      modelsEndpoint: "http://localhost:3001/v1/models",
+    },
   },
   {
     id: "librechat", name: "LibreChat", repo: "https://github.com/danny-avila/LibreChat", category: "chat",
@@ -303,6 +326,7 @@ router.get("/integrations", async (_req, res) => {
         usedFor: intg.usedFor,
         localPort: intg.localPort,
         healthUrl: intg.healthUrl,
+        localAiConfig: intg.localAiConfig,
         aiderTip: intg.aiderTip,
         installed,
         running,
@@ -323,7 +347,7 @@ router.post("/integrations/:id/pin", async (req, res) => {
   return res.json({ success: true, pinned: state[req.params.id].pinned });
 });
 
-router.post("/integrations/:id/install", async (req, res) => {
+router.post("/integrations/:id/install", agentExecGuard((req) => `install integration ${req.params.id}`), async (req, res) => {
   const intg = INTEGRATIONS.find((i) => i.id === req.params.id);
   if (!intg) return res.status(404).json({ success: false, message: "Integration not found" });
   try {
@@ -350,7 +374,7 @@ router.post("/integrations/:id/install", async (req, res) => {
   }
 });
 
-router.post("/integrations/:id/start", async (req, res) => {
+router.post("/integrations/:id/start", agentExecGuard((req) => `start integration ${req.params.id}`), async (req, res) => {
   const intg = INTEGRATIONS.find((i) => i.id === req.params.id);
   if (!intg || !intg.startCmd) return res.status(404).json({ success: false, message: "Cannot start this integration" });
   exec(isWindows ? intg.startCmd : `${intg.startCmd} >/dev/null 2>&1 &`);
@@ -368,7 +392,7 @@ router.get("/integrations/updates", async (_req, res) => {
   return res.json({ updates, checkedAt: new Date().toISOString() });
 });
 
-router.post("/integrations/:id/update", async (req, res) => {
+router.post("/integrations/:id/update", agentExecGuard((req) => `update integration ${req.params.id}`), async (req, res) => {
   const intg = INTEGRATIONS.find((i) => i.id === req.params.id);
   if (!intg) return res.status(404).json({ success: false, message: "Not found" });
   const cmd = isWindows

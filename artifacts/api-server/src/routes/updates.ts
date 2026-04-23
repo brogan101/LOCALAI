@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const execAsync = promisify(exec);
@@ -41,7 +42,7 @@ router.get("/system/updates/check", async (_req, res) => {
   return res.json({ items: results, checkedAt: new Date().toISOString(), updatesAvailable: 0 });
 });
 
-router.post("/system/updates/run", async (req, res) => {
+router.post("/system/updates/run", agentExecGuard("run system updates"), async (req, res) => {
   const body      = typeof req.body === "object" && req.body !== null ? (req.body as Record<string, unknown>) : {};
   const itemIds   = Array.isArray(body["itemIds"]) ? body["itemIds"] as string[] : [];
   const updateAll = body["updateAll"] === true;

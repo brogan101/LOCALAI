@@ -9,7 +9,9 @@ import {
   Code2, Box, Image, FileText, BookOpen, Car, Terminal,
   FileSearch, Printer, Download,
 } from "lucide-react";
-import api, { type ThoughtEntry, type RepairHealthEntry, type HardwareSnapshot, type WorkspacePreset } from "../api.js";
+import api, { apiErrorMessage, type ThoughtEntry, type RepairHealthEntry, type HardwareSnapshot, type WorkspacePreset } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -858,6 +860,8 @@ function QuickLaunchPresets({ onNavigate }: { onNavigate: (p: string) => void })
 function PullStackButton() {
   const [pulling, setPulling] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
 
   const rolesQ = useQuery({
     queryKey: ["model-roles"],
@@ -881,7 +885,7 @@ function PullStackButton() {
       }
       setResult(`Pull jobs started for: ${missing.join(", ")}`);
     } catch (e) {
-      setResult(e instanceof Error ? e.message : "Error");
+      setResult(apiErrorMessage(e, "Error"));
     } finally {
       setPulling(false);
       setTimeout(() => setResult(null), 6000);
@@ -892,9 +896,10 @@ function PullStackButton() {
 
   return (
     <div className="space-y-1">
+      {execDisabled && <PermissionNotice permission="allowAgentExec" />}
       <button
         onClick={() => void pullStack()}
-        disabled={pulling}
+        disabled={pulling || execDisabled}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-medium disabled:opacity-50"
         style={{ background: "color-mix(in srgb, var(--color-info) 12%, transparent)", color: "var(--color-info)", border: "1px solid color-mix(in srgb, var(--color-info) 25%, transparent)" }}>
         <Download size={12} />
@@ -910,6 +915,8 @@ function PullStackButton() {
 export default function Dashboard() {
   const qc = useQueryClient();
   const [, navigate] = useLocation();
+  const permissions = useAgentPermissions();
+  const execDisabled = permissions.settings ? !permissions.canExec : false;
 
   const { data: kernel } = useQuery({
     queryKey: ["kernel"],
@@ -1051,12 +1058,18 @@ export default function Dashboard() {
                   killMutation.mutate();
                 }
               }}
-              disabled={killMutation.isPending}
+              disabled={killMutation.isPending || execDisabled}
               className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
               style={{ background: "color-mix(in srgb, var(--color-error) 12%, transparent)", color: "var(--color-error)", border: "1px solid color-mix(in srgb, var(--color-error) 25%, transparent)" }}>
               <Power size={13} />
               Kill Switch
             </button>
+            {execDisabled && <PermissionNotice permission="allowAgentExec" />}
+            {killMutation.isError && (
+              <div className="text-xs px-1" style={{ color: "var(--color-error)" }}>
+                {apiErrorMessage(killMutation.error, "Kill-switch failed")}
+              </div>
+            )}
           </div>
         </div>
 

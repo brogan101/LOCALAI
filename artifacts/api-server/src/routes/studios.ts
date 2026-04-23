@@ -30,6 +30,7 @@ import { modelRolesService } from "../lib/model-roles-service.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { WORKSPACE_PRESETS, getPreset } from "../config/workspace-presets.js";
 import { probeHardware } from "../lib/hardware-probe.js";
+import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const STUDIOS_DIR = path.join(os.homedir(), "LocalAI-Studios");
@@ -556,7 +557,7 @@ router.post("/studios/plan", async (req, res) => {
   }
 });
 
-router.post("/studios/build", async (req, res) => {
+router.post("/studios/build", agentEditsGuard("build studio workspace"), agentExecGuard("build studio workspace"), async (req, res) => {
   const { name, brief, templateId, aiPlan } = req.body;
   if (!name?.trim() || !templateId) {
     return res.status(400).json({ success: false, message: "name and templateId required" });
@@ -575,7 +576,7 @@ router.get("/studios/build/:jobId", async (req, res) => {
 
 // ── Vibe Coding: test endpoint ─────────────────────────────────────────────
 
-router.post("/studios/vibecheck", async (req, res) => {
+router.post("/studios/vibecheck", agentExecGuard("run studio vibecheck"), async (req, res) => {
   const { studioPath, port, endpointPath, startCommand } = req.body as {
     studioPath?: string;
     port?: number;
@@ -745,7 +746,7 @@ router.get("/studios/presets", async (_req, res) => {
 
 // ── POST /studios/presets/enter — enter a workspace preset ───────────────────
 
-router.post("/studios/presets/enter", async (req, res) => {
+router.post("/studios/presets/enter", agentEditsGuard("enter studio workspace preset"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const presetId      = typeof body.presetId      === "string" ? body.presetId.trim()      : "";
   const workspacePath = typeof body.workspacePath === "string" ? body.workspacePath.trim() : "";
@@ -867,7 +868,7 @@ router.post("/studios/presets/enter", async (req, res) => {
 
 // ── POST /studios/cad/render — run OpenSCAD and return base64 PNG ─────────────
 
-router.post("/studios/cad/render", async (req, res) => {
+router.post("/studios/cad/render", agentExecGuard("render OpenSCAD model"), async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const scadScript = typeof body.scadScript === "string" ? body.scadScript : "";
 
@@ -962,7 +963,7 @@ router.get("/studios/imagegen/gallery", async (_req, res) => {
 
 // ── POST /studios/coding/write-continue-config — write .continue/config.json ─
 
-router.post("/studios/coding/write-continue-config", async (req, res) => {
+router.post("/studios/coding/write-continue-config", agentEditsGuard("write Continue workspace config"), agentExecGuard("open Continue workspace in VS Code"), async (req, res) => {
   const body          = typeof req.body === "object" && req.body !== null ? req.body : {};
   const workspacePath = typeof body.workspacePath === "string" ? body.workspacePath.trim() : "";
   const modelName     = typeof body.modelName     === "string" ? body.modelName.trim()     : "";

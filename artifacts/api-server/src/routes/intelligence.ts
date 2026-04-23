@@ -6,6 +6,7 @@ import {
   getRefactorJob,
   listRefactorJobs,
 } from "../lib/global-workspace-intelligence.js";
+import { agentEditsGuard, agentRefactorGuard } from "../lib/route-guards.js";
 
 const router = Router();
 
@@ -26,11 +27,11 @@ router.get("/intelligence/refactors/plan/:planId", (req, res) => {
   return res.json({ success: true, plan });
 });
 
-router.post("/intelligence/refactors/:planId/execute", async (req, res) => {
+router.post("/intelligence/refactors/:planId/execute", agentRefactorGuard((req) => `execute refactor plan ${String(req.params["planId"])}`), agentEditsGuard((req) => `execute refactor plan ${String(req.params["planId"])}`), async (req, res) => {
   const body  = typeof req.body === "object" && req.body !== null ? (req.body as Record<string, unknown>) : {};
   const model = typeof body["model"] === "string" ? (body["model"] as string).trim() : undefined;
   try {
-    const job = await executeRefactorPlan(req.params["planId"]!, model);
+    const job = await executeRefactorPlan(String(req.params["planId"]), model);
     return res.json({ success: true, job });
   } catch (err) { return res.status(400).json({ success: false, message: (err as Error).message }); }
 });

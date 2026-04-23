@@ -1,14 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Zap, Image, Box, RefreshCw, Play, Loader, CheckCircle, AlertTriangle,
   Code2, Printer, X, FolderOpen, ChevronRight,
-  BookOpen, Car, Terminal, FileSearch, FileText,
+  BookOpen, Car, Terminal, FileSearch, FileText, ChevronDown,
 } from "lucide-react";
 import api, {
   type CadScriptResult, type ImageGenResult, type ImageGenStatus,
   type GCodeOptimizeResult, type PromptArchitectResult, type WorkspacePreset,
-  type PresetEnterResult,
+  type PresetEnterResult, type ContextWorkspaceSummary,
 } from "../api.js";
 import { WorkspaceView } from "./WorkspaceView.js";
 
@@ -101,6 +101,81 @@ function ReadinessDot({ readiness }: { readiness?: string }) {
 
 // ── Preset Enter Modal ────────────────────────────────────────────────────────
 
+function WorkspacePicker({ onSelect }: { onSelect: (path: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 });
+
+  const wsQ = useQuery({
+    queryKey: ["context-workspaces-picker"],
+    queryFn: () => api.context.workspaces(),
+    staleTime: 30_000,
+    enabled: open,
+  });
+
+  const workspaces: ContextWorkspaceSummary[] = wsQ.data?.workspaces ?? [];
+
+  function openPicker() {
+    if (btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 240) });
+    }
+    setOpen(true);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={openPicker}
+        title="Pick from indexed workspaces"
+        className="px-2.5 py-2 rounded-lg flex items-center gap-1"
+        style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}>
+        <FolderOpen size={14} />
+        <ChevronDown size={10} />
+      </button>
+      {open && (
+        <div
+          ref={ref}
+          className="fixed z-[9999] rounded-xl overflow-hidden shadow-xl"
+          style={{ top: pos.top, left: pos.left, width: pos.width, background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+          {wsQ.isLoading ? (
+            <div className="p-3 text-xs flex items-center gap-2" style={{ color: "var(--color-muted)" }}>
+              <Loader size={12} className="animate-spin" /> Loading…
+            </div>
+          ) : workspaces.length === 0 ? (
+            <div className="p-3 text-xs" style={{ color: "var(--color-muted)" }}>
+              No indexed workspaces — use Context tab to index one.
+            </div>
+          ) : workspaces.map((ws) => (
+            <button
+              key={ws.rootPath}
+              onClick={() => { onSelect(ws.rootPath); setOpen(false); }}
+              className="w-full text-left px-3 py-2 text-xs hover:opacity-80 transition-opacity"
+              style={{ borderBottom: "1px solid var(--color-border)" }}>
+              <div className="font-medium" style={{ color: "var(--color-foreground)" }}>{ws.workspaceName}</div>
+              <div className="font-mono truncate" style={{ color: "var(--color-muted)" }}>{ws.rootPath}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function PresetModal({
   preset,
   onClose,
@@ -173,13 +248,7 @@ function PresetModal({
                 className="flex-1 px-3 py-2 rounded-lg text-sm font-mono outline-none"
                 style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
               />
-              <button
-                onClick={() => {}}
-                title="Browse (not supported in browser)"
-                className="px-2.5 py-2 rounded-lg"
-                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}>
-                <FolderOpen size={14} />
-              </button>
+              <WorkspacePicker onSelect={setWorkspacePath} />
             </div>
           </div>
 

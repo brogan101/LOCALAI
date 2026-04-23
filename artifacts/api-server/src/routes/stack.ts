@@ -14,6 +14,7 @@ import {
   execCommand,
 } from "../lib/runtime.js";
 import { writeManagedFile } from "../lib/snapshot-manager.js";
+import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const HOME = os.homedir();
@@ -309,7 +310,7 @@ router.get("/stack/status", async (req, res) => {
   }
 });
 
-router.post("/stack/components/:componentId/start", async (req, res) => {
+router.post("/stack/components/:componentId/start", agentExecGuard((req) => `start stack component ${req.params.componentId}`), async (req, res) => {
   const comp = COMPONENTS.find((c) => c.id === req.params.componentId);
   if (!comp) return res.status(404).json({ success: false, message: `Component '${req.params.componentId}' not found` });
   if (!comp.start) return res.json({ success: false, message: `No start command for '${comp.name}'` });
@@ -321,7 +322,7 @@ router.post("/stack/components/:componentId/start", async (req, res) => {
   }
 });
 
-router.post("/stack/components/:componentId/stop", async (req, res) => {
+router.post("/stack/components/:componentId/stop", agentExecGuard((req) => `stop stack component ${req.params.componentId}`), async (req, res) => {
   const comp = COMPONENTS.find((c) => c.id === req.params.componentId);
   if (!comp) return res.status(404).json({ success: false, message: `Component '${req.params.componentId}' not found` });
   if (!comp.stop) return res.json({ success: false, message: `No stop command for '${comp.name}'` });
@@ -333,7 +334,7 @@ router.post("/stack/components/:componentId/stop", async (req, res) => {
   }
 });
 
-router.post("/stack/components/:componentId/restart", async (req, res) => {
+router.post("/stack/components/:componentId/restart", agentExecGuard((req) => `restart stack component ${req.params.componentId}`), async (req, res) => {
   const comp = COMPONENTS.find((c) => c.id === req.params.componentId);
   if (!comp) return res.status(404).json({ success: false, message: `Component '${req.params.componentId}' not found` });
   try {
@@ -345,7 +346,7 @@ router.post("/stack/components/:componentId/restart", async (req, res) => {
   }
 });
 
-router.post("/stack/backup", async (_req, res) => {
+router.post("/stack/backup", agentEditsGuard("create stack backup"), async (_req, res) => {
   const backupDir = path.join(HOME, "LocalAI-Backups");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const webuiExe = path.join(HOME, "LocalAI-OpenWebUI", "Scripts", "open-webui.exe");
@@ -369,7 +370,7 @@ router.post("/stack/backup", async (_req, res) => {
   }
 });
 
-router.post("/stack/github-auth", async (_req, res) => {
+router.post("/stack/github-auth", agentExecGuard("launch GitHub auth"), async (_req, res) => {
   try {
     if (isWindows) exec('cmd /c start "GitHub Login" cmd /k "gh auth login --web"');
     else exec("gh auth login --web");

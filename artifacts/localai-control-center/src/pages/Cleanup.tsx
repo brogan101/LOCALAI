@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Trash2, RefreshCw, AlertTriangle, CheckCircle, ShieldAlert, ScanSearch } from "lucide-react";
-import api, { type CleanupArtifact } from "../api.js";
+import api, { apiErrorMessage, type CleanupArtifact } from "../api.js";
+import { PermissionNotice } from "../components/PermissionNotice.js";
+import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,6 +76,8 @@ function ArtifactRow({
 export default function CleanupPage() {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const permissions = useAgentPermissions();
+  const editsDisabled = permissions.settings ? !permissions.canEdit : false;
   const [result, setResult] = useState<{
     removedPaths: string[];
     scheduledForReboot: string[];
@@ -141,6 +145,8 @@ export default function CleanupPage() {
 
       {scan && (
         <>
+          {editsDisabled && <PermissionNotice permission="allowAgentEdits" />}
+
           {/* Summary stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
@@ -187,13 +193,18 @@ export default function CleanupPage() {
                 </button>
                 {selected.size > 0 && (
                   <button
-                    disabled={runMut.isPending}
+                    disabled={runMut.isPending || editsDisabled}
                     onClick={() => runMut.mutate([...selected])}
                     className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
                     style={{ background: "var(--color-error)", color: "#fff", opacity: runMut.isPending ? 0.6 : 1 }}>
                     <Trash2 size={12} />
                     {runMut.isPending ? "Removing…" : `Remove ${selected.size}`}
                   </button>
+                )}
+                {runMut.isError && (
+                  <span className="text-xs ml-auto" style={{ color: "var(--color-error)" }}>
+                    {apiErrorMessage(runMut.error, "Cleanup failed")}
+                  </span>
                 )}
               </div>
 

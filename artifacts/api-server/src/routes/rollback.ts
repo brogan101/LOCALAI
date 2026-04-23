@@ -10,6 +10,7 @@ import {
 import { db } from "../db/database.js";
 import { auditLog } from "../db/schema.js";
 import { desc, like, or, eq } from "drizzle-orm";
+import { agentEditsGuard } from "../lib/route-guards.js";
 
 const router = Router();
 
@@ -93,7 +94,7 @@ router.get("/rollback/scan", async (req, res) => {
   return res.json({ backups: allBackups });
 });
 
-router.post("/rollback", async (req, res) => {
+router.post("/rollback", agentEditsGuard("rollback file from backup"), async (req, res) => {
   const body =
     typeof req.body === "object" && req.body !== null
       ? (req.body as Record<string, unknown>)

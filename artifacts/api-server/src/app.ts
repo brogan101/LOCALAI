@@ -20,6 +20,8 @@ import { initDatabase } from "./db/migrate.js";
 import { taskQueue } from "./lib/task-queue.js";
 import { loadSettings } from "./lib/secure-config.js";
 import { WARMUP_TOP_N } from "./config/models.config.js";
+import { localBrowserRequestGuard } from "./lib/route-guards.js";
+import openaiCompatRoutes from "./routes/openai.js";
 
 const execAsync = promisify(exec);
 
@@ -106,6 +108,7 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(distributedNodeAuthMiddleware);
+app.use(localBrowserRequestGuard);
 
 // ── Strict Local Mode — intercepts outbound fetches from server routes ────────
 // Applied as Express middleware that patches globalThis.fetch when enabled.
@@ -158,6 +161,8 @@ void loadSettings().then(s => {
 }).catch(() => {});
 
 app.use("/api", routes);
+app.use("/v1", openaiCompatRoutes);
+app.use("/api/v1", openaiCompatRoutes);
 
 // ── Background service boot sequence ─────────────────────────────────────────
 //

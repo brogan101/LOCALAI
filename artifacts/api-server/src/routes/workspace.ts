@@ -17,6 +17,7 @@ import {
 import { writeManagedJson, writeManagedFile } from "../lib/snapshot-manager.js";
 import { thoughtLog } from "../lib/thought-log.js";
 import { robustCleanup } from "../lib/windows-system.js";
+import { agentEditsGuard, agentExecGuard, requireAgentEdits, requireAgentExec } from "../lib/route-guards.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
@@ -172,6 +173,10 @@ router.get("/workspace/projects", async (_req, res) => {
 
 router.post("/workspace/projects", async (req, res) => {
   const body = req.body;
+  if (!await requireAgentEdits(res, "create workspace project")) return;
+  if (body.bootstrapRepo && !await requireAgentExec(res, "initialize workspace git repo")) return;
+  if (body.openInVscode && !await requireAgentExec(res, "open workspace in VS Code")) return;
+  if (body.openAider && !await requireAgentExec(res, "open Aider for workspace")) return;
   const projects = await loadProjects();
   await ensureDir(body.path);
   thoughtLog.publish({
@@ -210,8 +215,8 @@ router.post("/workspace/projects", async (req, res) => {
   return res.json({ ...newProject, profile: profiles[newProject.id], ...await checkProjectReadiness(body.path) });
 });
 
-router.post("/workspace/projects/:projectId/open", async (req, res) => {
-  const { projectId } = req.params;
+router.post("/workspace/projects/:projectId/open", agentExecGuard((req) => `open workspace project ${req.params.projectId}`), async (req, res) => {
+  const projectId = String(req.params.projectId);
   const { mode } = req.body;
   const projects = await loadProjects();
   const project = projects.find((p: any) => p.id === projectId);
@@ -257,7 +262,7 @@ router.get("/workspace/snapshots", async (_req, res) => {
   return res.json({ snapshots });
 });
 
-router.post("/workspace/projects/:projectId/snapshots", async (req, res) => {
+router.post("/workspace/projects/:projectId/snapshots", agentEditsGuard((req) => `snapshot workspace project ${req.params.projectId}`), async (req, res) => {
   const { projectId } = req.params;
   const { label } = req.body;
   const projects = await loadProjects();
@@ -282,7 +287,7 @@ router.post("/workspace/projects/:projectId/snapshots", async (req, res) => {
   return res.json({ success: true, snapshot });
 });
 
-router.post("/workspace/projects/:projectId/archive", async (req, res) => {
+router.post("/workspace/projects/:projectId/archive", agentEditsGuard((req) => `archive workspace project ${req.params.projectId}`), async (req, res) => {
   const { projectId } = req.params;
   const projects = await loadProjects();
   const project = projects.find((entry: any) => entry.id === projectId);
@@ -302,7 +307,7 @@ router.post("/workspace/projects/:projectId/archive", async (req, res) => {
   return res.json({ success: true, message: "Workspace archived", archivePath, project });
 });
 
-router.post("/workspace/projects/:projectId/clone", async (req, res) => {
+router.post("/workspace/projects/:projectId/clone", agentEditsGuard((req) => `clone workspace project ${req.params.projectId}`), async (req, res) => {
   const { projectId } = req.params;
   const { path: targetPath, name } = req.body;
   if (!targetPath) return res.status(400).json({ success: false, message: "Target path required" });
@@ -329,8 +334,8 @@ router.post("/workspace/projects/:projectId/clone", async (req, res) => {
   return res.json({ success: true, project: clonedProject });
 });
 
-router.delete("/workspace/projects/:projectId", async (req, res) => {
-  const { projectId } = req.params;
+router.delete("/workspace/projects/:projectId", agentEditsGuard((req) => `delete workspace project ${String(req.params.projectId)}`), async (req, res) => {
+  const projectId = String(req.params.projectId);
   const projects = await loadProjects();
   const index = projects.findIndex((entry: any) => entry.id === projectId);
   if (index === -1) return res.status(404).json({ success: false, message: "Project not found" });

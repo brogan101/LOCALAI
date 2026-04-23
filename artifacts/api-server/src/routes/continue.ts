@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import path from "path";
 import os from "os";
 import { writeManagedFile } from "../lib/snapshot-manager.js";
+import { agentEditsGuard } from "../lib/route-guards.js";
 
 const router = Router();
 const HOME = os.homedir();
@@ -72,7 +73,7 @@ router.get("/continue/rules", async (req, res) => {
   }
 });
 
-router.post("/continue/rules", async (req, res) => {
+router.post("/continue/rules", agentEditsGuard("save Continue rule"), async (req, res) => {
   const { filename, content } = req.body;
   if (!filename || content === undefined) {
     return res.status(400).json({ success: false, message: "filename and content are required" });
@@ -93,8 +94,8 @@ router.post("/continue/rules", async (req, res) => {
   }
 });
 
-router.delete("/continue/rules/:filename", async (req, res) => {
-  const { filename } = req.params;
+router.delete("/continue/rules/:filename", agentEditsGuard((req) => `delete Continue rule ${String(req.params.filename)}`), async (req, res) => {
+  const filename = String(req.params.filename);
   const safeName = path.basename(filename);
   const filePath = path.join(RULES_DIR, safeName);
   if (!existsSync(filePath)) {

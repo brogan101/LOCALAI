@@ -18,6 +18,13 @@ build/
 .env.local
 .env.*.local
 
+# Local secrets / tokens
+**/.webui_secret_key
+**/*.secret
+**/*.token
+artifacts/api-server/vault/
+artifacts/api-server/config.json
+
 # Logs
 *.log
 logs/
