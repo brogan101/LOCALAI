@@ -5,7 +5,7 @@
 .DESCRIPTION
     Sits in the system tray while LocalAI is running.
     Two menu items:
-      - "Open Control Center" — opens http://localhost:5173 in the default browser
+      - "Open Control Center" — opens http://127.0.0.1:5173 in the default browser
       - "Kill AI Processes"   — POSTs to /api/system/process/kill-switch
     Exits cleanly when LocalAI shuts down or when the user chooses Exit.
 #>
@@ -15,8 +15,8 @@ Add-Type -AssemblyName System.Drawing
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-$ApiBase    = if ($env:LOCALAI_API_URL)  { $env:LOCALAI_API_URL  } else { "http://localhost:3001" }
-$FrontendUrl = if ($env:LOCALAI_UI_URL) { $env:LOCALAI_UI_URL   } else { "http://localhost:5173" }
+$ApiBase    = if ($env:LOCALAI_API_URL)  { $env:LOCALAI_API_URL  } else { "http://127.0.0.1:3001" }
+$FrontendUrl = if ($env:LOCALAI_UI_URL) { $env:LOCALAI_UI_URL   } else { "http://127.0.0.1:5173" }
 
 # ── Icon ──────────────────────────────────────────────────────────────────────
 # Build a minimal 16x16 icon in memory (filled circle, accent color #6366f1)

@@ -93,13 +93,13 @@ if (-not (Test-Path $nodeModules) -or -not (Test-Path $lockFile)) {
 # ── 5. Launch backend ─────────────────────────────────────────────────────────
 Write-Step "Starting API server (port 3001)..." Cyan
 $backendDir = Join-Path $root "artifacts\api-server"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$backendDir'; pnpm run dev"
+Start-Process cmd.exe -ArgumentList "/k", "cd /d `"$backendDir`" && pnpm run dev"
 Start-Sleep -Seconds 5
 
 # ── 6. Launch frontend ────────────────────────────────────────────────────────
 Write-Step "Starting Control Center (port 5173)..." Cyan
 $frontendDir = Join-Path $root "artifacts\localai-control-center"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$frontendDir'; pnpm run dev"
+Start-Process cmd.exe -ArgumentList "/k", "cd /d `"$frontendDir`" && pnpm run dev"
 Start-Sleep -Seconds 3
 
 # ── 7. Status table ──────────────────────────────────────────────────────────
@@ -108,9 +108,9 @@ Write-Host "  STATUS TABLE" -ForegroundColor White
 Write-Host "  ─────────────────────────────────────────────" -ForegroundColor DarkGray
 
 $checks = @(
-    @{ name = "API Server";      url = "http://localhost:3001/api/health"; label = "port 3001" },
-    @{ name = "Control Center";  url = "http://localhost:5173";            label = "port 5173" },
-    @{ name = "Ollama";          url = "http://localhost:11434/api/tags";  label = "port 11434" }
+    @{ name = "API Server";      url = "http://127.0.0.1:3001/api/health"; label = "port 3001" },
+    @{ name = "Control Center";  url = "http://127.0.0.1:5173";            label = "port 5173" },
+    @{ name = "Ollama";          url = "http://127.0.0.1:11434/api/tags";  label = "port 11434" }
 )
 
 foreach ($check in $checks) {
@@ -131,13 +131,13 @@ Write-Host ""
 if (-not $NoBrowser) {
     Write-Step "Opening browser..." Green
     Start-Sleep -Seconds 2
-    Start-Process "http://localhost:5173"
+    Start-Process "http://127.0.0.1:5173"
 }
 
 Write-Host ""
 Write-Host "  Sovereign AI OS is running." -ForegroundColor Green
-Write-Host "  Control Center: http://localhost:5173" -ForegroundColor Cyan
-Write-Host "  API Server:     http://localhost:3001" -ForegroundColor Cyan
+Write-Host "  Control Center: http://127.0.0.1:5173" -ForegroundColor Cyan
+Write-Host "  API Server:     http://127.0.0.1:3001" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Options: .\LAUNCH_OS.ps1 -NoBrowser -NoOllama" -ForegroundColor DarkGray
 Write-Host ""

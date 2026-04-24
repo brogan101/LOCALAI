@@ -40,7 +40,7 @@ async function maybeSpawnSttSidecar(): Promise<void> {
     if (major < 3 || (major === 3 && minor < 10)) throw new Error(`Python ${major}.${minor} < 3.10`);
 
     const sidecarScript = path.resolve(
-      __dirname, "../../../sidecars/stt-server.py",
+      __dirname, "../sidecars/stt-server.py",
     );
     const sidecar = spawn("python", [sidecarScript], {
       detached: true,
