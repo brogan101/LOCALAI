@@ -64,3 +64,15 @@ $RECYCLE.BIN/
 
 # Claude Code local settings (not committed)
 .claude/settings.local.json
+
+# Runtime / agent execution logs (not source)
+.audit-logs/
+.codex-run-logs/
+
+# Local SQLite database (runtime state, not source)
+*.db
+*.sqlite
+*.sqlite3
+
+# Phase build reports (generated outputs, not source docs)
+PHASE_*_REPORT.md
