@@ -204,7 +204,7 @@ export async function testEndpoint(
   endpointPath = "/",
   startCommand = "pnpm dev",
 ): Promise<VibeCodingTestResult> {
-  const endpointUrl = `http://localhost:${port}${endpointPath}`;
+  const endpointUrl = `http://127.0.0.1:${port}${endpointPath}`;
   const testedAt    = nowIso();
 
   thoughtLog.publish({

@@ -99,6 +99,28 @@ export interface DistributedNodeConfig {
   authToken: string;
 }
 
+// ── Local-first provider policy config ───────────────────────────────────────
+
+export type ProviderKind = "local" | "cloud";
+export type ProviderStatus = "available" | "disabled" | "not_configured";
+
+export interface ProviderConfigEntry {
+  id: string;
+  enabled: boolean;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  firstUseApproved: boolean;
+  allowPrivateFileData: boolean;
+  costHintUsdPer1MTokens?: number;
+  updatedAt: string;
+}
+
+export interface ProviderPolicyConfig {
+  defaultProviderId: string;
+  providers: Record<string, ProviderConfigEntry>;
+}
+
 // ── App settings ─────────────────────────────────────────────────────────────
 
 export interface AppSettings {
@@ -139,6 +161,7 @@ export interface AppConfig {
   settings: AppSettings;
   capabilityRegistry: CapabilityRegistry;
   distributedNode: DistributedNodeConfig;
+  providerPolicy: ProviderPolicyConfig;
 }
 
 // ── Encrypted envelope ───────────────────────────────────────────────────────
@@ -228,6 +251,37 @@ export function defaultDistributedNodeConfig(): DistributedNodeConfig {
   };
 }
 
+export function defaultProviderPolicyConfig(): ProviderPolicyConfig {
+  const now = nowIso();
+  const entry = (id: string, baseUrl = ""): ProviderConfigEntry => ({
+    id,
+    enabled: false,
+    baseUrl,
+    model: "",
+    apiKey: "",
+    firstUseApproved: false,
+    allowPrivateFileData: false,
+    updatedAt: now,
+  });
+  return {
+    defaultProviderId: "ollama",
+    providers: {
+      ollama: { ...entry("ollama", "http://127.0.0.1:11434"), enabled: true, firstUseApproved: true },
+      "localai-gateway": { ...entry("localai-gateway", "http://127.0.0.1:3001/v1"), enabled: true, firstUseApproved: true },
+      "llama.cpp": entry("llama.cpp"),
+      vllm: entry("vllm"),
+      sglang: entry("sglang"),
+      litellm: entry("litellm"),
+      "lm-studio": entry("lm-studio", "http://127.0.0.1:1234/v1"),
+      "openai-compatible": entry("openai-compatible"),
+      "anthropic-compatible": entry("anthropic-compatible"),
+      "google-compatible": entry("google-compatible"),
+      "openrouter-compatible": entry("openrouter-compatible"),
+      "custom-base-url": entry("custom-base-url"),
+    },
+  };
+}
+
 function defaultAppConfig(): AppConfig {
   return {
     version: 1,
@@ -235,6 +289,7 @@ function defaultAppConfig(): AppConfig {
     settings: { ...DEFAULT_SETTINGS },
     capabilityRegistry: defaultCapabilityRegistry(),
     distributedNode: defaultDistributedNodeConfig(),
+    providerPolicy: defaultProviderPolicyConfig(),
   };
 }
 
@@ -303,6 +358,14 @@ function decryptConfig(envelope: ConfigEnvelope, key: Buffer): AppConfig {
       ...defaultDistributedNodeConfig(),
       ...(parsed.distributedNode || {}),
     },
+    providerPolicy: {
+      ...defaultProviderPolicyConfig(),
+      ...(parsed.providerPolicy || {}),
+      providers: {
+        ...defaultProviderPolicyConfig().providers,
+        ...(parsed.providerPolicy?.providers || {}),
+      },
+    },
   };
 }
 
@@ -356,6 +419,14 @@ export async function saveConfig(config: AppConfig): Promise<AppConfig> {
     distributedNode: {
       ...defaultDistributedNodeConfig(),
       ...(config.distributedNode || {}),
+    },
+    providerPolicy: {
+      ...defaultProviderPolicyConfig(),
+      ...(config.providerPolicy || {}),
+      providers: {
+        ...defaultProviderPolicyConfig().providers,
+        ...(config.providerPolicy?.providers || {}),
+      },
     },
   };
   const key = await getConfigKey();
@@ -430,6 +501,37 @@ export async function saveDistributedNodeConfig(
     },
   }));
   return updated.distributedNode;
+}
+
+export async function loadProviderPolicyConfig(): Promise<ProviderPolicyConfig> {
+  const config = await loadConfig();
+  return {
+    ...defaultProviderPolicyConfig(),
+    ...(config.providerPolicy || {}),
+    providers: {
+      ...defaultProviderPolicyConfig().providers,
+      ...(config.providerPolicy?.providers || {}),
+    },
+  };
+}
+
+export async function saveProviderPolicyConfig(
+  providerPolicy: Partial<ProviderPolicyConfig>,
+): Promise<ProviderPolicyConfig> {
+  const updated = await updateConfig((current) => ({
+    ...current,
+    providerPolicy: {
+      ...defaultProviderPolicyConfig(),
+      ...(current.providerPolicy || {}),
+      ...providerPolicy,
+      providers: {
+        ...defaultProviderPolicyConfig().providers,
+        ...(current.providerPolicy?.providers || {}),
+        ...(providerPolicy.providers || {}),
+      },
+    },
+  }));
+  return updated.providerPolicy;
 }
 
 // Re-export for use in network-proxy

@@ -155,6 +155,8 @@ const cases = [
   { method: "POST", path: "/system/updates/run", body: { itemIds: ["git"] }, permission: "allowAgentExec" },
   { method: "POST", path: "/workspace/projects", body: { name: "x", path: "C:/tmp/localai-test-x" }, permission: "allowAgentEdits" },
   { method: "POST", path: "/worldgui/click", body: { x: 1, y: 1 }, permission: "allowAgentExec" },
+  { method: "POST", path: "/worldgui/type", body: { text: "x" }, permission: "allowAgentExec" },
+  { method: "POST", path: "/worldgui/keys", body: { keys: "{ENTER}" }, permission: "allowAgentExec" },
 ];
 
 const allowedProgressCases = [
@@ -171,6 +173,8 @@ const allowedProgressCases = [
   { method: "POST", path: "/timetravel/restore", body: {}, permissions: { allowAgentEdits: true }, expectedStatus: 400 },
   { method: "POST", path: "/system/updates/run", body: {}, permissions: { allowAgentExec: true }, expectedStatus: 200 },
   { method: "POST", path: "/worldgui/click", body: {}, permissions: { allowAgentExec: true }, expectedStatus: 400 },
+  { method: "POST", path: "/worldgui/type", body: {}, permissions: { allowAgentExec: true }, expectedStatus: 400 },
+  { method: "POST", path: "/worldgui/keys", body: {}, permissions: { allowAgentExec: true }, expectedStatus: 400 },
 ];
 
 let assertions = 0;
@@ -206,6 +210,26 @@ try {
     assert.notEqual(response.status, 403, `${testCase.method} ${testCase.path} should pass permission guard`);
     assert.equal(response.status, testCase.expectedStatus, `${testCase.method} ${testCase.path} should reach route handler`);
     assertions += 2;
+  }
+
+  setTestPermissions({
+    allowAgentExec: true,
+    allowAgentEdits: false,
+    allowAgentSelfHeal: false,
+    allowAgentRefactor: false,
+  });
+  const desktopSecret = "SECRET_DESKTOP_INPUT_DO_NOT_LOG";
+  const desktopApprovalCases = [
+    { path: "/worldgui/type", body: { text: desktopSecret } },
+    { path: "/worldgui/keys", body: { keys: desktopSecret } },
+  ];
+  for (const testCase of desktopApprovalCases) {
+    const response = await inject("POST", testCase.path, testCase.body);
+    assert.equal(response.status, 202, `${testCase.path} should require approval before execution`);
+    assert.equal(response.payload.success, false, `${testCase.path} should not execute immediately`);
+    assert.equal(response.payload.approvalRequired, true, `${testCase.path} should flag approvalRequired`);
+    assert.doesNotMatch(JSON.stringify(response.payload), /SECRET_DESKTOP_INPUT_DO_NOT_LOG/, `${testCase.path} should not echo raw desktop input`);
+    assertions += 4;
   }
 } finally {
   delete process.env.LOCALAI_TEST_AGENT_PERMISSIONS;

@@ -31,6 +31,42 @@ import { getOllamaUrl } from "../lib/ollama-url.js";
 import { WORKSPACE_PRESETS, getPreset } from "../config/workspace-presets.js";
 import { probeHardware } from "../lib/hardware-probe.js";
 import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
+import {
+  createMakerCadArtifact,
+  createMakerMachineSetupSheet,
+  createMakerMaterial,
+  createMakerProject,
+  createMakerSlicingProposal,
+  createMakerDesignProposal,
+  getMakerProject,
+  getMakerStudioStatus,
+  listMakerCadProviders,
+  listMakerCadArtifacts,
+  listMakerMachineProviders,
+  listMakerPrintProviders,
+  listMakerIntegrations,
+  listMakerMaterials,
+  listMakerProjects,
+  listMakerSafetyPolicies,
+  proposeMakerCadProviderAction,
+  proposeMakerIntegrationAction,
+  proposeMakerMachineProviderAction,
+  proposeMakerMachineWorkflowAction,
+  proposeMakerPhysicalAction,
+  proposeMakerPrintProviderAction,
+  proposeMakerPrintWorkflowAction,
+} from "../lib/maker-studio.js";
+import {
+  getRoboticsStatus,
+  listRoboticsProviders,
+  createRobotProfile,
+  listRobotProfiles,
+  getRobotProfile,
+  createSimPlan,
+  listSimPlans,
+  proposeRoboticsAction,
+  type RoboticsActionType,
+} from "../lib/robotics-lab.js";
 
 const router = Router();
 const STUDIOS_DIR = path.join(os.homedir(), "LocalAI-Studios");
@@ -646,6 +682,156 @@ router.post("/studios/cad/gcode", async (req, res) => {
   }
 });
 
+// ── Maker Studio Foundation routes ────────────────────────────────────────
+
+router.get("/studios/maker/status", async (_req, res) => {
+  return res.json({ success: true, status: getMakerStudioStatus() });
+});
+
+router.get("/studios/maker/safety-policies", async (_req, res) => {
+  return res.json({ success: true, policies: listMakerSafetyPolicies() });
+});
+
+router.get("/studios/maker/integrations", async (_req, res) => {
+  return res.json({ success: true, integrations: listMakerIntegrations() });
+});
+
+router.get("/studios/maker/cad/providers", async (_req, res) => {
+  return res.json({ success: true, providers: listMakerCadProviders() });
+});
+
+router.post("/studios/maker/cad/providers/:providerId/action", async (req, res) => {
+  const result = proposeMakerCadProviderAction(req.params.providerId, String(req.body?.action ?? "execute"));
+  return res.status(result.success ? 200 : 409).json(result);
+});
+
+router.get("/studios/maker/print/providers", async (_req, res) => {
+  return res.json({ success: true, providers: listMakerPrintProviders() });
+});
+
+router.post("/studios/maker/print/providers/:providerId/action", async (req, res) => {
+  const result = proposeMakerPrintProviderAction(req.params.providerId, String(req.body?.action ?? "status"));
+  return res.status(result.success ? 200 : 409).json(result);
+});
+
+router.get("/studios/maker/machine/providers", async (_req, res) => {
+  return res.json({ success: true, providers: listMakerMachineProviders() });
+});
+
+router.post("/studios/maker/machine/providers/:providerId/action", async (req, res) => {
+  const result = proposeMakerMachineProviderAction(req.params.providerId, String(req.body?.action ?? "status"));
+  return res.status(result.success ? 200 : 409).json(result);
+});
+
+router.post("/studios/maker/integrations/:integrationId/action", async (req, res) => {
+  const result = proposeMakerIntegrationAction(req.params.integrationId, String(req.body?.action ?? "execute"));
+  return res.status(result.success ? 200 : 409).json(result);
+});
+
+router.get("/studios/maker/projects", async (req, res) => {
+  const limit = Number(req.query.limit ?? 100);
+  return res.json({ success: true, projects: listMakerProjects(Number.isFinite(limit) ? limit : 100) });
+});
+
+router.post("/studios/maker/projects", async (req, res) => {
+  try {
+    const project = createMakerProject(req.body ?? {});
+    return res.status(201).json({ success: true, project });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/studios/maker/projects/:projectId", async (req, res) => {
+  const project = getMakerProject(req.params.projectId);
+  if (!project) return res.status(404).json({ success: false, message: "Maker project not found" });
+  return res.json({ success: true, project });
+});
+
+router.post("/studios/maker/projects/:projectId/actions/propose", async (req, res) => {
+  const result = proposeMakerPhysicalAction(req.params.projectId, {
+    actionType: typeof req.body?.actionType === "string" ? req.body.actionType : undefined,
+    approvalId: typeof req.body?.approvalId === "string" ? req.body.approvalId : undefined,
+  });
+  return res.status(result.success ? 200 : result.status === "blocked" ? 404 : 409).json(result);
+});
+
+router.post("/studios/maker/projects/:projectId/slicing/proposals", async (req, res) => {
+  try {
+    const proposal = createMakerSlicingProposal({ ...(req.body ?? {}), projectId: req.params.projectId });
+    return res.status(201).json(proposal);
+  } catch (err) {
+    return res.status(400).json({ success: false, executed: false, status: "blocked", message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/studios/maker/projects/:projectId/print/propose", async (req, res) => {
+  const result = proposeMakerPrintWorkflowAction(req.params.projectId, {
+    actionType: typeof req.body?.actionType === "string" ? req.body.actionType : undefined,
+    providerId: typeof req.body?.providerId === "string" ? req.body.providerId : undefined,
+    material: req.body?.material && typeof req.body.material === "object" ? req.body.material : undefined,
+    approvalId: typeof req.body?.approvalId === "string" ? req.body.approvalId : undefined,
+  });
+  return res.status(result.success ? 200 : result.status === "blocked" ? 409 : 409).json(result);
+});
+
+router.post("/studios/maker/projects/:projectId/machine/setup-sheets", async (req, res) => {
+  try {
+    const proposal = createMakerMachineSetupSheet({ ...(req.body ?? {}), projectId: req.params.projectId });
+    return res.status(201).json(proposal);
+  } catch (err) {
+    return res.status(400).json({ success: false, executed: false, status: "blocked", message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/studios/maker/projects/:projectId/machine/propose", async (req, res) => {
+  const result = proposeMakerMachineWorkflowAction(req.params.projectId, {
+    actionType: typeof req.body?.actionType === "string" ? req.body.actionType : undefined,
+    providerId: typeof req.body?.providerId === "string" ? req.body.providerId : undefined,
+    operationType: typeof req.body?.operationType === "string" ? req.body.operationType : undefined,
+    approvalId: typeof req.body?.approvalId === "string" ? req.body.approvalId : undefined,
+  });
+  return res.status(result.success ? 200 : result.status === "blocked" ? 409 : 409).json(result);
+});
+
+router.get("/studios/maker/materials", async (req, res) => {
+  const limit = Number(req.query.limit ?? 100);
+  return res.json({ success: true, materials: listMakerMaterials(Number.isFinite(limit) ? limit : 100) });
+});
+
+router.post("/studios/maker/materials", async (req, res) => {
+  try {
+    const material = createMakerMaterial(req.body ?? {});
+    return res.status(201).json({ success: true, material });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/studios/maker/projects/:projectId/cad-artifacts", async (req, res) => {
+  const project = getMakerProject(req.params.projectId);
+  if (!project) return res.status(404).json({ success: false, message: "Maker project not found" });
+  return res.json({ success: true, artifacts: listMakerCadArtifacts(project.id) });
+});
+
+router.post("/studios/maker/projects/:projectId/cad-artifacts", async (req, res) => {
+  try {
+    const artifact = createMakerCadArtifact({ ...(req.body ?? {}), projectId: req.params.projectId });
+    return res.status(201).json({ success: true, artifact });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/studios/maker/projects/:projectId/design-proposals", async (req, res) => {
+  try {
+    const proposal = createMakerDesignProposal({ ...(req.body ?? {}), projectId: req.params.projectId });
+    return res.status(201).json(proposal);
+  } catch (err) {
+    return res.status(400).json({ success: false, executed: false, status: "blocked", message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // ── Image Generation Studio routes ────────────────────────────────────────
 
 /** GET /studios/imagegen/status — probe ComfyUI and SD Web UI */
@@ -713,7 +899,7 @@ router.post("/studios/imagegen/generate", async (req, res) => {
 // ── GET /studios/presets — list all presets with model availability ────────────
 
 router.get("/studios/presets", async (_req, res) => {
-  const ollamaUrl = await getOllamaUrl().catch(() => "http://localhost:11434");
+  const ollamaUrl = await getOllamaUrl().catch(() => "http://127.0.0.1:11434");
   let installedNames: string[] = [];
   try {
     const data = await fetchJson<{ models?: Array<{ name: string }> }>(
@@ -800,7 +986,7 @@ router.post("/studios/presets/enter", agentEditsGuard("enter studio workspace pr
   const primaryRole = preset.requiredRoles[0];
   const primaryModel = roleModels.find(r => r.role === primaryRole)?.modelName ?? null;
   if (primaryModel) {
-    const ollamaUrl = await getOllamaUrl().catch(() => "http://localhost:11434");
+    const ollamaUrl = await getOllamaUrl().catch(() => "http://127.0.0.1:11434");
     try {
       await postJson(`${ollamaUrl}/api/generate`, {
         model:      primaryModel,
@@ -830,7 +1016,7 @@ router.post("/studios/presets/enter", agentEditsGuard("enter studio workspace pr
   // Only assign roles where the model is actually installed in Ollama
   if (preset.preferredRoleAssignments) {
     try {
-      const ollamaUrl = await getOllamaUrl().catch(() => "http://localhost:11434");
+      const ollamaUrl = await getOllamaUrl().catch(() => "http://127.0.0.1:11434");
       const tagsRes = await fetchJson<{ models: Array<{ name: string }> }>(
         `${ollamaUrl}/api/tags`
       ).catch(() => ({ models: [] as Array<{ name: string }> }));
@@ -981,14 +1167,14 @@ router.post("/studios/coding/write-continue-config", agentEditsGuard("write Cont
         title:    "LocalAI (Ollama)",
         provider: "ollama",
         model:    modelName,
-        apiBase:  "http://localhost:11434",
+        apiBase:  "http://127.0.0.1:11434",
       },
     ],
     tabAutocompleteModel: {
       title:    "Autocomplete (Ollama)",
       provider: "ollama",
       model:    modelName,
-      apiBase:  "http://localhost:11434",
+      apiBase:  "http://127.0.0.1:11434",
     },
     allowAnonymousTelemetry: false,
   };
@@ -1010,6 +1196,104 @@ router.post("/studios/coding/write-continue-config", agentEditsGuard("write Cont
     const msg = e instanceof Error ? e.message : String(e);
     return res.status(500).json({ success: false, message: msg });
   }
+});
+
+// ── Robotics Lab routes ───────────────────────────────────────────────────────
+
+/** GET /studios/robotics/status — overall Robotics Lab status + hard limits */
+router.get("/studios/robotics/status", (_req, res) => {
+  return res.json({ success: true, status: getRoboticsStatus() });
+});
+
+/** GET /studios/robotics/providers — list all 9 optional providers (all not_configured) */
+router.get("/studios/robotics/providers", (_req, res) => {
+  return res.json({ success: true, providers: listRoboticsProviders() });
+});
+
+/** GET /studios/robotics/profiles — list robot profiles (optional ?robotType= filter) */
+router.get("/studios/robotics/profiles", (req, res) => {
+  const robotType = typeof req.query.robotType === "string" ? req.query.robotType : undefined;
+  return res.json({ success: true, profiles: listRobotProfiles(robotType ? { robotType } : undefined) });
+});
+
+/** POST /studios/robotics/profiles — create a robot profile (no hardware, simulation-only) */
+router.post("/studios/robotics/profiles", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  if (!body.name || typeof body.name !== "string") {
+    return res.status(400).json({ success: false, message: "name required" });
+  }
+  try {
+    const profile = createRobotProfile({
+      name:         String(body.name),
+      robotType:    typeof body.robotType === "string" ? body.robotType as "arm" | "rover" | "drone" | "humanoid" | "custom" : undefined,
+      simModel:     typeof body.simModel   === "string" ? body.simModel  : undefined,
+      urdfRef:      typeof body.urdfRef    === "string" ? body.urdfRef   : undefined,
+      joints:       Array.isArray(body.joints)   ? body.joints   : undefined,
+      sensors:      Array.isArray(body.sensors)  ? body.sensors  : undefined,
+      safeWorkspace: typeof body.safeWorkspace === "string" ? body.safeWorkspace : undefined,
+      safetyNotes:  Array.isArray(body.safetyNotes) ? body.safetyNotes : undefined,
+    });
+    return res.status(201).json({ success: true, profile });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** GET /studios/robotics/profiles/:profileId — get single robot profile */
+router.get("/studios/robotics/profiles/:profileId", (req, res) => {
+  const profile = getRobotProfile(req.params.profileId);
+  if (!profile) return res.status(404).json({ success: false, message: "Robot profile not found" });
+  return res.json({ success: true, profile });
+});
+
+/** POST /studios/robotics/sim-plans — create a simulation plan (hardware blocked) */
+router.post("/studios/robotics/sim-plans", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  if (!body.profileId || typeof body.profileId !== "string") {
+    return res.status(400).json({ success: false, message: "profileId required" });
+  }
+  if (!body.name || typeof body.name !== "string") {
+    return res.status(400).json({ success: false, message: "name required" });
+  }
+  try {
+    const plan = createSimPlan({
+      profileId:       String(body.profileId),
+      name:            String(body.name),
+      taskDescription: typeof body.taskDescription === "string" ? body.taskDescription : "",
+      motionSequence:  Array.isArray(body.motionSequence) ? body.motionSequence : undefined,
+      assumptions:     Array.isArray(body.assumptions)    ? body.assumptions    : undefined,
+    });
+    return res.status(201).json({ success: true, plan });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** GET /studios/robotics/sim-plans — list simulation plans (optional ?profileId= filter) */
+router.get("/studios/robotics/sim-plans", (req, res) => {
+  const profileId = typeof req.query.profileId === "string" ? req.query.profileId : undefined;
+  return res.json({ success: true, plans: listSimPlans(profileId ? { profileId } : undefined) });
+});
+
+/** POST /studios/robotics/actions/propose — propose a robotics action (blocked/manual_only/sim_only) */
+router.post("/studios/robotics/actions/propose", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  if (!body.profileId || typeof body.profileId !== "string") {
+    return res.status(400).json({ success: false, message: "profileId required" });
+  }
+  if (!body.actionType || typeof body.actionType !== "string") {
+    return res.status(400).json({ success: false, message: "actionType required" });
+  }
+  const proposal = proposeRoboticsAction({
+    profileId:  String(body.profileId),
+    simPlanId:  typeof body.simPlanId   === "string" ? body.simPlanId   : undefined,
+    actionType: body.actionType as RoboticsActionType,
+    approvalId: typeof body.approvalId  === "string" ? body.approvalId  : undefined,
+    metadata:   typeof body.metadata    === "object"  ? body.metadata   : undefined,
+  });
+  // Blocked actions return 409, others 200
+  const httpStatus = proposal.status === "blocked" ? 409 : 200;
+  return res.status(httpStatus).json({ success: proposal.status !== "blocked", proposal });
 });
 
 router.get("/studios/integrations", async (_req, res) => {

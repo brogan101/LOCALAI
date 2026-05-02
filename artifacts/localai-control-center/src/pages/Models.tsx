@@ -22,7 +22,7 @@ import {
   Timer,
   Star,
 } from "lucide-react";
-import api, { apiErrorMessage, type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry, type BenchmarkRun } from "../api.js";
+import api, { apiErrorMessage, type ModelListItem, type DiscoveredModelCard, type HardwareSnapshot, type ModelPullHistoryEntry, type BenchmarkRun, type ModelLifecycleSnapshot } from "../api.js";
 import { PermissionNotice } from "../components/PermissionNotice.js";
 import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
@@ -103,6 +103,7 @@ function PullProgress({ onClose }: { onClose: () => void }) {
 function ModelRow({ model }: { model: ModelListItem }) {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState(false);
+  const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
   const permissions = useAgentPermissions();
 
   const refresh = () => {
@@ -111,11 +112,20 @@ function ModelRow({ model }: { model: ModelListItem }) {
     void qc.invalidateQueries({ queryKey: ["pullStatus"] });
   };
 
-  const loadMut = useMutation({ mutationFn: () => api.models.load(model.name), onSuccess: refresh });
-  const stopMut = useMutation({ mutationFn: () => api.models.stop(model.name), onSuccess: refresh });
+  const handleActionResult = (result: { approvalRequired?: true; approval?: { id: string }; message?: string }) => {
+    if (result.approvalRequired) {
+      setApprovalMessage(`Approval queued${result.approval?.id ? `: ${result.approval.id.slice(0, 8)}` : ""}`);
+    } else {
+      setApprovalMessage(null);
+    }
+    refresh();
+  };
+
+  const loadMut = useMutation({ mutationFn: () => api.models.load(model.name), onSuccess: handleActionResult });
+  const stopMut = useMutation({ mutationFn: () => api.models.stop(model.name), onSuccess: handleActionResult });
   const delMut  = useMutation({
     mutationFn: () => api.models.delete(model.name),
-    onSuccess: () => { refresh(); setConfirm(false); },
+    onSuccess: (result) => { handleActionResult(result); setConfirm(false); },
   });
 
   const busy = loadMut.isPending || stopMut.isPending || delMut.isPending;
@@ -221,6 +231,11 @@ function ModelRow({ model }: { model: ModelListItem }) {
       {actionError && (
         <div className="basis-full text-xs mt-1" style={{ color: "var(--color-error)" }}>
           {apiErrorMessage(actionError)}
+        </div>
+      )}
+      {approvalMessage && (
+        <div className="basis-full text-xs mt-1" style={{ color: "var(--color-warn)" }}>
+          {approvalMessage}. No model action executed yet.
         </div>
       )}
     </div>
@@ -782,6 +797,163 @@ function BenchmarkTab() {
   );
 }
 
+// ── Lifecycle tab ────────────────────────────────────────────────────────────
+
+function yesNo(value: boolean | "unknown") {
+  if (value === "unknown") return "unknown";
+  return value ? "yes" : "no";
+}
+
+function LifecycleTab() {
+  const qc = useQueryClient();
+  const lifecycleQ = useQuery<ModelLifecycleSnapshot>({
+    queryKey: ["model-lifecycle"],
+    queryFn: () => api.models.lifecycle(),
+    staleTime: 20_000,
+  });
+  const [proposalMessage, setProposalMessage] = useState<string | null>(null);
+
+  const proposeMut = useMutation({
+    mutationFn: (body: { action: string; modelName?: string; currentModelName?: string; candidateModelName?: string; role?: string; dryRunOnly?: boolean; evalProof?: Record<string, number> }) =>
+      api.models.proposeLifecycleAction(body),
+    onSuccess: (data) => {
+      setProposalMessage(`${data.proposal.status}: ${data.proposal.reasons.join(" ")}`);
+      void qc.invalidateQueries({ queryKey: ["model-lifecycle"] });
+    },
+  });
+
+  const data = lifecycleQ.data;
+
+  if (lifecycleQ.isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16" style={{ color: "var(--color-muted)" }}>
+        <Loader2 size={18} className="animate-spin mr-2" /> Loading lifecycle state…
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 gap-2">
+        <AlertTriangle size={24} style={{ color: "var(--color-error)" }} />
+        <span className="text-sm" style={{ color: "var(--color-muted)" }}>Lifecycle state unavailable.</span>
+      </div>
+    );
+  }
+
+  const installed = data.models;
+  const backends = data.backends;
+
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="p-3 rounded-xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+          <div className="text-xs font-semibold mb-1" style={{ color: "var(--color-foreground)" }}>Local-first route</div>
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+            Default provider: <span className="font-mono" style={{ color: "var(--color-accent)" }}>{data.defaultProviderId}</span>
+          </div>
+          <div className="text-xs mt-1" style={{ color: data.ollamaReachable ? "var(--color-success)" : "var(--color-warn)" }}>
+            Ollama {data.ollamaReachable ? "reachable" : "not configured/reachable"}
+          </div>
+        </div>
+        <div className="p-3 rounded-xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+          <div className="text-xs font-semibold mb-1" style={{ color: "var(--color-foreground)" }}>Runtime mode</div>
+          <div className="text-sm font-medium" style={{ color: data.runtimeMode === "Gaming" ? "var(--color-warn)" : "var(--color-foreground)" }}>{data.runtimeMode}</div>
+          <div className="text-xs mt-1" style={{ color: "var(--color-muted)" }}>GPU-heavy actions are proposal/approval gated.</div>
+        </div>
+        <div className="p-3 rounded-xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+          <div className="text-xs font-semibold mb-1" style={{ color: "var(--color-foreground)" }}>Telemetry</div>
+          <div className="text-xs" style={{ color: data.telemetry.gpuTelemetryUnavailable ? "var(--color-warn)" : "var(--color-success)" }}>
+            GPU: {data.telemetry.gpuProbedVia} · {data.telemetry.gpuStatus}
+          </div>
+          <div className="text-xs mt-1" style={{ color: "var(--color-muted)" }}>
+            Disk free: {typeof data.telemetry.diskFreeBytes === "number" ? `${(data.telemetry.diskFreeBytes / 1024 ** 3).toFixed(1)} GB` : "unknown"}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-3 rounded-xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>Backend profiles</h2>
+            <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>Profiles reuse provider policy; cloud/API providers stay optional.</p>
+          </div>
+          <button onClick={() => lifecycleQ.refetch()} className="p-1.5 rounded-lg" style={{ color: "var(--color-muted)" }}>
+            <RefreshCw size={13} />
+          </button>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          {backends.map((backend) => (
+            <div key={backend.id} className="p-2 rounded-lg" style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium" style={{ color: "var(--color-foreground)" }}>{backend.displayName}</span>
+                {backend.default && <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "color-mix(in srgb, var(--color-success) 12%, transparent)", color: "var(--color-success)" }}>default</span>}
+                <span className="text-xs ml-auto" style={{ color: backend.kind === "local" ? "var(--color-success)" : "var(--color-warn)" }}>{backend.kind}</span>
+              </div>
+              <div className="text-xs mt-1" style={{ color: "var(--color-muted)" }}>
+                {backend.status} · {backend.startupPolicy} · data leaves machine: {backend.dataLeavesMachine ? "yes" : "no"}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-3 rounded-xl" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="font-semibold text-sm" style={{ color: "var(--color-foreground)" }}>Role and capability table</h2>
+            <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>{data.routingSourceOfTruth}</p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {installed.length === 0 && (
+            <div className="text-sm py-6 text-center" style={{ color: "var(--color-muted)" }}>No installed Ollama models reported. Local mode remains available when Ollama is started.</div>
+          )}
+          {installed.map((model) => (
+            <div key={model.name} className="p-3 rounded-lg" style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)" }}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-sm" style={{ color: "var(--color-foreground)" }}>{model.name}</span>
+                <span className="text-xs" style={{ color: model.runtimeModeCompatibility.compatible ? "var(--color-success)" : "var(--color-warn)" }}>
+                  {model.runtimeModeCompatibility.compatible ? "runtime ok" : "runtime blocked"}
+                </span>
+                <span className="text-xs ml-auto" style={{ color: "var(--color-muted)" }}>{model.estimatedRuntimeFormatted}</span>
+              </div>
+              <div className="text-xs mt-1 flex flex-wrap gap-3" style={{ color: "var(--color-muted)" }}>
+                <span>roles: {model.role.length ? model.role.join(", ") : "unassigned"}</span>
+                <span>chat: {yesNo(model.capabilities.chat)}</span>
+                <span>coding: {yesNo(model.capabilities.coding)}</span>
+                <span>embed: {yesNo(model.capabilities.embeddings)}</span>
+                <span>vision: {yesNo(model.capabilities.vision)}</span>
+                <span>tools: {yesNo(model.capabilities.toolCalling)}</span>
+                <span>JSON: {yesNo(model.capabilities.structuredOutput)}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  onClick={() => proposeMut.mutate({ action: "unload", modelName: model.name })}
+                  className="text-xs px-2 py-1 rounded-lg"
+                  style={{ background: "var(--color-border)", color: "var(--color-foreground)" }}>
+                  Propose unload
+                </button>
+                <button
+                  onClick={() => proposeMut.mutate({ action: "delete", modelName: model.name })}
+                  className="text-xs px-2 py-1 rounded-lg"
+                  style={{ background: "color-mix(in srgb, var(--color-error) 10%, transparent)", color: "var(--color-error)" }}>
+                  Propose delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {proposalMessage && (
+          <div className="text-xs mt-3" style={{ color: proposeMut.data?.proposal.safeToRecommend ? "var(--color-success)" : "var(--color-warn)" }}>
+            {proposalMessage}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Models page ───────────────────────────────────────────────────────────────
 
 export default function ModelsPage() {
@@ -789,7 +961,7 @@ export default function ModelsPage() {
   const [showPull, setShowPull] = useState(false);
   const [pullInitialName, setPullInitialName] = useState("");
   const [showProgress, setShowProgress] = useState(true);
-  const [tab, setTab] = useState<"installed" | "catalog" | "history" | "benchmark">("installed");
+  const [tab, setTab] = useState<"installed" | "catalog" | "history" | "benchmark" | "lifecycle">("installed");
   const qc = useQueryClient();
 
   function openPull(name = "") {
@@ -889,7 +1061,7 @@ export default function ModelsPage() {
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-6 pt-3 shrink-0"
         style={{ borderBottom: "1px solid var(--color-border)" }}>
-        {(["installed", "catalog", "history", "benchmark"] as const).map(t => (
+        {(["installed", "catalog", "history", "benchmark", "lifecycle"] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -991,6 +1163,8 @@ export default function ModelsPage() {
       {tab === "history" && <PullHistoryTab onRePull={openPull} />}
 
       {tab === "benchmark" && <BenchmarkTab />}
+
+      {tab === "lifecycle" && <LifecycleTab />}
 
       {/* Pull modal */}
       {showPull && <PullModal initialName={pullInitialName} onClose={() => { setShowPull(false); setPullInitialName(""); }} />}

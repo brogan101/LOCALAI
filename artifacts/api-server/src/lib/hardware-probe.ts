@@ -7,7 +7,8 @@
  * GPU detection order:
  *   1. nvidia-smi (NVML)
  *   2. PowerShell Win32_VideoController (Windows fallback)
- *   3. Safe-mode: 20% of os.totalmem()
+ *   3. pnputil display-device identity fallback
+ *   4. Safe-mode: 20% of os.totalmem()
  */
 
 import { exec as cpExec } from "child_process";
@@ -32,7 +33,10 @@ export interface GpuSnapshot {
   driver?:     string;
   totalVramBytes: number;
   freeVramBytes:  number;
-  probedVia:   "nvidia-smi" | "wmic" | "safe-mode";
+  probedVia:   "nvidia-smi" | "wmic" | "pnputil" | "safe-mode";
+  status?:     "ok" | "degraded" | "safe-mode";
+  warnings?:   string[];
+  telemetryUnavailable?: boolean;
 }
 
 export interface CpuSnapshot {
@@ -132,12 +136,49 @@ async function probeGpuWmic(): Promise<GpuSnapshot | null> {
   }
 }
 
+export function parsePnputilDisplayDevices(output: string): string[] {
+  const names: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^\s*(?:Device Description|Device Name)\s*:\s*(.+?)\s*$/.exec(line);
+    if (match?.[1]) names.push(match[1]);
+  }
+  return names;
+}
+
+async function probeGpuPnputil(): Promise<GpuSnapshot | null> {
+  if (os.platform() !== "win32") return null;
+  try {
+    const { stdout } = await execAsync("pnputil /enum-devices /class Display", { timeout: 10000 });
+    const devices = parsePnputilDisplayDevices(stdout);
+    const nvidia = devices.find((device) => /nvidia/i.test(device));
+    const best = nvidia ?? devices.find((device) => !/parsec|virtual|remote/i.test(device)) ?? devices[0];
+    if (!best) return null;
+    const total = Math.round(os.totalmem() * 0.20);
+    return {
+      name: best,
+      totalVramBytes: total,
+      freeVramBytes: total,
+      probedVia: "pnputil",
+      status: "degraded",
+      telemetryUnavailable: true,
+      warnings: [
+        "NVML/VRAM telemetry is unavailable; GPU identity came from pnputil and VRAM is a conservative safe-mode estimate.",
+      ],
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function probeGpu(): Promise<GpuSnapshot> {
   const nvidiaSmi = await probeGpuNvidiaSmi();
   if (nvidiaSmi) return nvidiaSmi;
 
   const wmic = await probeGpuWmic();
   if (wmic) return wmic;
+
+  const pnputil = await probeGpuPnputil();
+  if (pnputil) return pnputil;
 
   // Safe-mode: 20% of system RAM as a rough VRAM floor
   const total = Math.round(os.totalmem() * 0.20);
@@ -146,6 +187,9 @@ async function probeGpu(): Promise<GpuSnapshot> {
     totalVramBytes: total,
     freeVramBytes:  total,
     probedVia:      "safe-mode",
+    status:         "safe-mode",
+    telemetryUnavailable: true,
+    warnings:       ["GPU telemetry unavailable; using safe-mode VRAM estimate."],
   };
 }
 

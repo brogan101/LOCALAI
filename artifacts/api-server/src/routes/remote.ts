@@ -19,6 +19,16 @@ import {
   rotateDistributedAuthToken,
 } from "../lib/network-proxy.js";
 import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
+import {
+  listEdgeNodes,
+  getEdgeNode,
+  upsertEdgeNode,
+  deleteEdgeNode,
+  checkEdgeNodeHealth,
+  evaluateEdgeAction,
+  getGamingPcRoleDescription,
+  EDGE_NODE_SOURCE_OF_TRUTH,
+} from "../lib/edge-node.js";
 
 const router = Router();
 const REMOTE_DIR = path.join(toolsRoot(), "remote");
@@ -256,6 +266,230 @@ start "LiteLLM" cmd /k "litellm --config %USERPROFILE%\\LocalAI-Tools\\remote\\l
       REMOTE_SETTINGS,
     ],
   });
+});
+
+// ── Edge Node Registry ────────────────────────────────────────────────────────
+
+router.get("/edge-nodes/source-of-truth", (_req, res) => {
+  return res.json({ sourceOfTruth: EDGE_NODE_SOURCE_OF_TRUTH.trim() });
+});
+
+router.get("/edge-nodes/gaming-pc/role", (_req, res) => {
+  return res.json(getGamingPcRoleDescription());
+});
+
+router.get("/edge-nodes", (_req, res) => {
+  const nodes = listEdgeNodes();
+  return res.json({ nodes, count: nodes.length });
+});
+
+router.post("/edge-nodes", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  const profile = upsertEdgeNode({
+    name,
+    nodeType: body.nodeType,
+    roles: Array.isArray(body.roles) ? body.roles : undefined,
+    endpoint: typeof body.endpoint === "string" ? body.endpoint.trim() : undefined,
+    authType: body.authType,
+    isGamingPc: body.isGamingPc === true,
+    alwaysOn: body.alwaysOn === true,
+    description: typeof body.description === "string" ? body.description.trim() : undefined,
+  });
+  return res.status(201).json({ profile });
+});
+
+router.get("/edge-nodes/:id", (req, res) => {
+  const node = getEdgeNode(req.params.id);
+  if (!node) return res.status(404).json({ error: "Node not found" });
+  return res.json({ profile: node });
+});
+
+router.put("/edge-nodes/:id", (req, res) => {
+  const existing = getEdgeNode(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Node not found" });
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const name = typeof body.name === "string" ? body.name.trim() : existing.name;
+  if (!name) return res.status(400).json({ error: "name cannot be empty" });
+  const profile = upsertEdgeNode({
+    id: req.params.id,
+    name,
+    nodeType: body.nodeType,
+    roles: Array.isArray(body.roles) ? body.roles : undefined,
+    endpoint: typeof body.endpoint === "string" ? body.endpoint.trim() : undefined,
+    authType: body.authType,
+    isGamingPc: typeof body.isGamingPc === "boolean" ? body.isGamingPc : undefined,
+    alwaysOn: typeof body.alwaysOn === "boolean" ? body.alwaysOn : undefined,
+    description: typeof body.description === "string" ? body.description.trim() : undefined,
+  });
+  return res.json({ profile });
+});
+
+router.delete("/edge-nodes/:id", (req, res) => {
+  const removed = deleteEdgeNode(req.params.id);
+  if (!removed) return res.status(404).json({ error: "Node not found" });
+  return res.json({ success: true });
+});
+
+router.post("/edge-nodes/:id/health-check", async (req, res) => {
+  const node = getEdgeNode(req.params.id);
+  if (!node) return res.status(404).json({ error: "Node not found" });
+  const result = await checkEdgeNodeHealth(req.params.id);
+  return res.json(result);
+});
+
+router.post("/edge-nodes/:id/capabilities/:capabilityId/evaluate", (req, res) => {
+  const result = evaluateEdgeAction(req.params.id, req.params.capabilityId);
+  const status = result.requiresApproval ? 202 : 200;
+  return res.status(status).json(result);
+});
+
+// ── Phase 14B: Home Autopilot ─────────────────────────────────────────────────
+
+import {
+  HOME_AUTOPILOT_SOURCE_OF_TRUTH,
+  getHomeAutopilotStatus,
+  getDefaultHaProfile,
+  getHaProfile,
+  upsertHaProfile,
+  getDefaultMqttProfile,
+  upsertMqttProfile,
+  listHomeDevices,
+  getHomeDevice,
+  upsertHomeDevice,
+  evaluateHaAction,
+  evaluateMqttPublish,
+  evaluateDeviceAction,
+  type HomeDeviceType,
+  type HomeDeviceProvider,
+  type HomeActionRisk,
+} from "../lib/home-autopilot.js";
+
+router.get("/home-autopilot/source-of-truth", (_req, res) => {
+  res.json({ sourceOfTruth: HOME_AUTOPILOT_SOURCE_OF_TRUTH });
+});
+
+router.get("/home-autopilot/status", (_req, res) => {
+  const status = getHomeAutopilotStatus();
+  res.json(status);
+});
+
+// ── HA routes ─────────────────────────────────────────────────────────────────
+
+router.get("/home-autopilot/ha/profile", (_req, res) => {
+  const profile = getDefaultHaProfile();
+  if (!profile) {
+    return res.json({ profile: null, configured: false, message: "Home Assistant not configured" });
+  }
+  return res.json({ profile, configured: profile.configured });
+});
+
+router.post("/home-autopilot/ha/profile", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const name = typeof body.name === "string" && body.name ? body.name : "Home Assistant";
+  const profile = upsertHaProfile({
+    id:              typeof body.id === "string"             ? body.id           : undefined,
+    name,
+    endpoint:        typeof body.endpoint === "string"       ? body.endpoint     : undefined,
+    haMcpEnabled:    typeof body.haMcpEnabled === "boolean"  ? body.haMcpEnabled : undefined,
+    haMcpProfile:    (typeof body.haMcpProfile === "object" && body.haMcpProfile !== null)
+                       ? body.haMcpProfile as Record<string, unknown> : undefined,
+    entityAllowlist: Array.isArray(body.entityAllowlist)     ? body.entityAllowlist : undefined,
+    configured:      typeof body.configured === "boolean"    ? body.configured   : undefined,
+  });
+  return res.status(201).json({ profile });
+});
+
+router.post("/home-autopilot/ha/entities/:entityId/evaluate", (req, res) => {
+  const { entityId } = req.params;
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const action = typeof body.action === "string" ? body.action : "read_state";
+  const profileId = typeof body.profileId === "string" ? body.profileId : "";
+
+  let resolvedProfileId = profileId;
+  if (!resolvedProfileId) {
+    const def = getDefaultHaProfile();
+    if (!def) {
+      return res.json({ result: { allowed: false, riskTier: "blocked", requiresApproval: false, message: "Home Assistant not configured", executed: false } });
+    }
+    resolvedProfileId = def.id;
+  }
+
+  const result = evaluateHaAction(resolvedProfileId, entityId, action);
+  return res.status(result.requiresApproval ? 202 : 200).json({ result });
+});
+
+// ── MQTT routes ───────────────────────────────────────────────────────────────
+
+router.get("/home-autopilot/mqtt/profile", (_req, res) => {
+  const profile = getDefaultMqttProfile();
+  if (!profile) {
+    return res.json({ profile: null, configured: false, message: "MQTT not configured" });
+  }
+  return res.json({ profile, configured: profile.configured });
+});
+
+router.post("/home-autopilot/mqtt/profile", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const name = typeof body.name === "string" && body.name ? body.name : "MQTT Broker";
+  const profile = upsertMqttProfile({
+    id:             typeof body.id === "string"                ? body.id           : undefined,
+    name,
+    brokerHost:     typeof body.brokerHost === "string"        ? body.brokerHost   : undefined,
+    brokerPort:     typeof body.brokerPort === "number"        ? body.brokerPort   : undefined,
+    topicAllowlist: Array.isArray(body.topicAllowlist)         ? body.topicAllowlist : undefined,
+    configured:     typeof body.configured === "boolean"       ? body.configured   : undefined,
+  });
+  return res.status(201).json({ profile });
+});
+
+router.post("/home-autopilot/mqtt/topics/evaluate", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const topic = typeof body.topic === "string" ? body.topic : "";
+  if (!topic) return res.status(400).json({ error: "topic is required" });
+  const profileId = typeof body.profileId === "string" ? body.profileId : "";
+  const result = evaluateMqttPublish(profileId, topic);
+  return res.status(result.requiresApproval ? 202 : 200).json({ result });
+});
+
+// ── Device routes ─────────────────────────────────────────────────────────────
+
+router.get("/home-autopilot/devices", (_req, res) => {
+  const devices = listHomeDevices();
+  return res.json({ devices, count: devices.length });
+});
+
+router.post("/home-autopilot/devices", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  if (typeof body.name !== "string" || !body.name) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  const device = upsertHomeDevice({
+    name:         body.name as string,
+    deviceType:   typeof body.deviceType === "string"  ? body.deviceType as HomeDeviceType   : undefined,
+    provider:     typeof body.provider === "string"    ? body.provider as HomeDeviceProvider  : undefined,
+    endpoint:     typeof body.endpoint === "string"    ? body.endpoint   : undefined,
+    configured:   typeof body.configured === "boolean" ? body.configured : undefined,
+    actionPolicy: (typeof body.actionPolicy === "object" && body.actionPolicy !== null)
+                    ? body.actionPolicy as Record<string, HomeActionRisk> : undefined,
+  });
+  return res.status(201).json({ device });
+});
+
+router.get("/home-autopilot/devices/:deviceId", (req, res) => {
+  const device = getHomeDevice(req.params.deviceId);
+  if (!device) return res.status(404).json({ error: "Device not found" });
+  return res.json({ device });
+});
+
+router.post("/home-autopilot/devices/:deviceId/action/evaluate", (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const action = typeof body.action === "string" ? body.action : "status_read";
+  const result = evaluateDeviceAction(req.params.deviceId, action);
+  return res.status(result.requiresApproval ? 202 : 200).json({ result });
 });
 
 export default router;

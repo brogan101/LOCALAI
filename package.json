@@ -13,7 +13,15 @@
     "start:api": "pnpm --filter api-server start",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm --filter api-server test && pnpm --filter localai-control-center test",
-    "clean": "pnpm -r exec rm -rf dist && rm -rf node_modules",
+    "verify:baseline": "node scripts/verify-localai-baseline.mjs",
+    "verify:jarvis": "node scripts/verify-jarvis.mjs",
+    "eval:jarvis": "pnpm --filter api-server run eval:jarvis",
+    "clean": "node scripts/clean-workspace.mjs",
+    "backup:config": "node scripts/backup-config.mjs",
+    "restore:config:dry-run": "node scripts/restore-config.mjs --dry-run",
+    "health:check": "node scripts/health-check.mjs",
+    "emergency-stop": "node scripts/emergency-stop.mjs --dry-run",
+    "gaming-mode": "node scripts/gaming-mode.mjs --dry-run",
     "install:all": "pnpm install"
   }
 }

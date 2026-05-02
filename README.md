@@ -3,6 +3,8 @@
 A fully local AI workstation running entirely on your hardware.
 No cloud required. No API keys. No data leaves the machine.
 
+Optional API/cloud providers can be configured later from Settings, but they are disabled or not configured by default. Ollama and the local OpenAI-compatible gateway remain the default path, and private file/RAG data, credentials, and secrets are blocked from cloud provider use by policy.
+
 ---
 
 ## Quick Start
@@ -12,9 +14,9 @@ No cloud required. No API keys. No data leaves the machine.
 | Requirement | Minimum | Notes |
 | ----------- | ------- | ----- |
 | OS | Windows 11 | PowerShell 5.1+ required for OS interop features |
-| Node.js | 20.x LTS | 22.x recommended |
+| Node.js | 20.x LTS | 22.22.0+ recommended for browser automation |
 | pnpm | 9.x | `npm i -g pnpm` |
-| Ollama | Latest | Must be running on `localhost:11434` |
+| Ollama | Latest | Must be running on `127.0.0.1:11434` |
 | Python | 3.10+ | Optional — required for faster-whisper STT sidecar |
 | Piper TTS | Any | Optional — `winget install piper-tts` for voice output |
 
@@ -31,7 +33,31 @@ pnpm --filter api-server dev
 pnpm --filter localai-control-center dev
 ```
 
-Open `http://localhost:5173` in your browser.
+Open `http://127.0.0.1:5173` in your browser.
+
+### Packaging, backup, and disaster recovery
+
+LOCALAI is packaged for manual, gaming-PC-safe startup. It does not auto-install
+services, enable startup tasks, open firewall ports, or modify PATH globally by
+default. Use optional edge nodes for always-on workloads instead of assuming the
+gaming PC is a server.
+
+Phase 21 recovery commands are local-first helpers:
+
+```powershell
+pnpm run health:check
+pnpm run backup:config
+pnpm run restore:config:dry-run
+pnpm run gaming-mode
+pnpm run emergency-stop
+```
+
+Backups create a metadata-only recovery manifest for the SQLite DB, app settings,
+integration config references, prompt/context docs, generated workflow/template
+metadata, and model role metadata. Raw secrets, credentials, private backup
+contents, and model blobs are excluded by default. Restore remains dry-run and
+approval-gated: a current-state backup manifest is required before any restore
+proposal, and destructive restore execution is not configured by default.
 
 ### Pull the model stack (first run)
 
@@ -69,6 +95,16 @@ For the full model stack see [Model Stack](#model-stack) below.
 │  Model inference     │   │  DuckDuckGo fallback scraper │
 └─────────────────────┘   └──────────────────────────────┘
 ```
+
+### Local-first provider policy
+
+LOCALAI runs normally with no API keys installed. Provider policy is exposed in Settings and through `/api/provider-policy`:
+
+- local providers are the default and cost `$0`
+- Ollama remains the default model provider
+- optional cloud/API providers require explicit configuration and approval
+- secrets, credentials, and private file/RAG context are not sent to cloud providers by default
+- provider connection tests in the current phase are policy checks and do not require network access
 
 **Phase reports** document every capability in detail:
 `PHASE_0_REPORT.md` through `PHASE_7_REPORT.md` in the repo root.
@@ -170,7 +206,7 @@ Studios page offers purpose-built AI workflows:
 ### Web Search
 
 - Enable in Settings → Voice → "Enable web search"
-- `/web <query>` searches SearxNG (if running on `localhost:8888`) or falls back
+- `/web <query>` searches SearxNG (if running on `127.0.0.1:8888`) or falls back
   to DuckDuckGo HTML scraping via `cheerio`
 - `POST /api/web/fetch { url }` strips HTML noise and returns plain text (capped 20 KB)
 
@@ -221,7 +257,7 @@ Blocked commands return HTTP 403 and are logged to the Thought Log at level `err
 
 Toggle in Settings → Remote → "Strict Local Mode".
 When active, `globalThis.fetch` is patched to block all outbound requests to
-non-loopback addresses. Only `localhost`, `127.0.0.1`, `::1`, `0.0.0.0`, and
+non-loopback addresses. Only `127.0.0.1`, `localhost`, `::1`, `0.0.0.0`, and
 Tailscale addresses (`100.x.x.x`) are allowed. Blocked fetches are logged.
 
 ### Rollback
@@ -239,7 +275,7 @@ Every file modified by the agent is backed up with `snapshot-manager.ts`:
 
 ### "Ollama not running" in the sidebar
 
-The sidebar shows an **offline** / red dot when Ollama isn't reachable at `localhost:11434`.
+The sidebar shows an **offline** / red dot when Ollama isn't reachable at `127.0.0.1:11434`.
 
 1. Start Ollama: run `ollama serve` in a terminal
 2. Wait ~5 seconds for the heartbeat to recover

@@ -140,7 +140,7 @@ async function writeTemplateFiles(targetPath: string, templateId: string, projec
     "src/main.py": `def main():\n    print('Hello from ${projectName}')\n\nif __name__ == '__main__':\n    main()\n`,
     "tests/test_smoke.py": `def test_smoke():\n    assert True\n`,
     "app/main.py": `from fastapi import FastAPI\n\napp = FastAPI(title='${projectName}')\n\n@app.get('/healthz')\ndef healthz():\n    return {'status': 'ok'}\n`,
-    "tests/test_health.py": `from app.main import app\n\ndef test_placeholder():\n    assert app.title == '${projectName}'\n`,
+    "tests/test_health.py": `from app.main import app\n\ndef test_health_app_title_matches_project():\n    assert app.title == '${projectName}'\n`,
     "pyproject.toml": `[project]\nname = '${projectName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}'\nversion = '0.1.0'\ndescription = '${(brief || "AI scaffold").replace(/'/g, "")}'\nrequires-python = '>=3.11'\n\n[tool.pytest.ini_options]\ntestpaths = ['tests']\n`,
     "package.json": JSON.stringify({ name: projectName.toLowerCase().replace(/[^a-z0-9]+/g, "-"), private: true, version: "0.1.0", scripts: { dev: "vite", build: "vite build", lint: "eslint .", test: "vitest" } }, null, 2),
     "index.html": `<!doctype html><html><body><div id='root'></div><script type='module' src='/src/main.tsx'></script></body></html>`,

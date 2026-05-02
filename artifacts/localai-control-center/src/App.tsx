@@ -19,6 +19,14 @@ import {
   ChevronRight,
   Server,
   CloudOff,
+  Archive,
+  Mic,
+  BriefcaseBusiness,
+  ShieldAlert,
+  Network,
+  Boxes,
+  PackageSearch,
+  Car,
 } from "lucide-react";
 import api from "./api.js";
 
@@ -35,6 +43,14 @@ const WorkspacePage = lazy(() => import("./pages/Workspace.js"));
 const StudiosPage = lazy(() => import("./pages/Studios.js"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage.js"));
 const OperationsPage = lazy(() => import("./pages/Operations.js"));
+const EvidenceVaultPage = lazy(() => import("./pages/EvidenceVault.js"));
+const VoicePage = lazy(() => import("./pages/Voice.js"));
+const BusinessPage = lazy(() => import("./pages/Business.js"));
+const ITSupportPage = lazy(() => import("./pages/ITSupport.js"));
+const HomeLabPage = lazy(() => import("./pages/HomeLab.js"));
+const DigitalTwinPage = lazy(() => import("./pages/DigitalTwin.js"));
+const InventoryPage = lazy(() => import("./pages/Inventory.js"));
+const AutomotivePage = lazy(() => import("./pages/Automotive.js"));
 
 function Placeholder({ title, description }: { title: string; description?: string }) {
   return (
@@ -62,20 +78,79 @@ function PageLoading() {
 
 // ── Nav config ────────────────────────────────────────────────────────────────
 
-const NAV_ITEMS = [
-  { path: "/",            label: "Dashboard",    icon: LayoutDashboard },
-  { path: "/chat",        label: "Chat",         icon: MessageSquare },
-  { path: "/models",      label: "Models",       icon: Cpu },
-  { path: "/workspace",   label: "Workspace",    icon: Folder },
-  { path: "/studios",     label: "Studios",      icon: Zap },
-  { path: "/diagnostics", label: "Diagnostics",  icon: Activity },
-  { path: "/logs",        label: "Logs",         icon: ScrollText },
-  { path: "/cleanup",     label: "Cleanup",      icon: Wrench },
-  { path: "/remote",      label: "Remote",       icon: Radio },
-  { path: "/integrations",label: "Integrations", icon: Plug },
-  { path: "/operations",  label: "Operations",   icon: Server },
-  { path: "/settings",    label: "Settings",     icon: Settings },
-] as const;
+// Grouped nav — section labels organize the 20 pages into readable clusters.
+// Routes are preserved exactly; only the sidebar rendering is changed.
+
+type NavItem = { path: string; label: string; icon: React.ElementType };
+
+const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
+  {
+    items: [
+      { path: "/",    label: "Dashboard", icon: LayoutDashboard },
+      { path: "/chat", label: "Chat",     icon: MessageSquare },
+    ],
+  },
+  {
+    label: "Models / Providers",
+    items: [
+      { path: "/models",    label: "Models",    icon: Cpu },
+      { path: "/workspace", label: "Workspace", icon: Folder },
+    ],
+  },
+  {
+    label: "Studios",
+    items: [
+      { path: "/studios", label: "Studios", icon: Zap },
+    ],
+  },
+  {
+    label: "Automation / Tools",
+    items: [
+      { path: "/integrations", label: "Integrations", icon: Plug },
+      { path: "/voice",        label: "Voice",        icon: Mic },
+      { path: "/remote",       label: "Remote",       icon: Radio },
+    ],
+  },
+  {
+    label: "Knowledge",
+    items: [
+      { path: "/evidence",    label: "Evidence",     icon: Archive },
+      { path: "/inventory",   label: "Inventory",    icon: PackageSearch },
+      { path: "/digital-twin", label: "Digital Twin", icon: Boxes },
+      { path: "/automotive",  label: "Automotive",   icon: Car },
+    ],
+  },
+  {
+    label: "HomeLab / Network",
+    items: [
+      { path: "/homelab", label: "HomeLab", icon: Network },
+    ],
+  },
+  {
+    label: "Business / IT",
+    items: [
+      { path: "/business",   label: "Business",   icon: BriefcaseBusiness },
+      { path: "/it-support", label: "IT Support", icon: ShieldAlert },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { path: "/operations",  label: "Operations",  icon: Server },
+      { path: "/diagnostics", label: "Diagnostics", icon: Activity },
+      { path: "/logs",        label: "Logs",        icon: ScrollText },
+      { path: "/cleanup",     label: "Cleanup",     icon: Wrench },
+    ],
+  },
+  {
+    items: [
+      { path: "/settings", label: "Settings", icon: Settings },
+    ],
+  },
+];
+
+// Flat list used only for active-path matching in the Sidebar
+const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap(g => g.items);
 
 // ── Status bar (top-right corner of sidebar) ──────────────────────────────────
 
@@ -141,28 +216,48 @@ function Sidebar() {
         </div>
       </div>
 
-      {/* Nav links */}
-      <nav className="flex-1 overflow-y-auto py-3 px-2">
-        {NAV_ITEMS.map(({ path, label, icon: Icon }) => {
-          const active = path === "/" ? location === "/" : location.startsWith(path);
-          return (
-            <Link
-              key={path}
-              href={path}
-              className="flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 text-sm transition-colors cursor-pointer"
-              style={{
-                display: "flex",
-                background: active ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : "transparent",
-                color: active ? "var(--color-foreground)" : "var(--color-muted)",
-                fontWeight: active ? 500 : 400,
-                textDecoration: "none",
-              }}>
-              <Icon size={16} style={{ color: active ? "var(--color-accent)" : "inherit", flexShrink: 0 }} />
-              <span style={{ flex: 1 }}>{label}</span>
-              {active && <ChevronRight size={12} style={{ color: "var(--color-accent)" }} />}
-            </Link>
-          );
-        })}
+      {/* Nav links — grouped with section labels */}
+      <nav className="flex-1 overflow-y-auto py-2 px-2">
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={gi} className={gi > 0 ? "mt-1" : ""}>
+            {group.label && (
+              <div
+                className="px-3 pt-2 pb-0.5 text-xs font-semibold uppercase tracking-wider select-none"
+                style={{ color: "var(--color-muted)", opacity: 0.55, letterSpacing: "0.07em" }}
+              >
+                {group.label}
+              </div>
+            )}
+            {group.items.map(({ path, label, icon: Icon }) => {
+              const active = path === "/" ? location === "/" : location.startsWith(path);
+              return (
+                <Link
+                  key={path}
+                  href={path}
+                  className="flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 text-sm transition-colors cursor-pointer"
+                  style={{
+                    display: "flex",
+                    background: active
+                      ? "color-mix(in srgb, var(--color-accent) 18%, transparent)"
+                      : "transparent",
+                    color: active ? "var(--color-foreground)" : "var(--color-muted)",
+                    fontWeight: active ? 500 : 400,
+                    textDecoration: "none",
+                  }}
+                >
+                  <Icon
+                    size={15}
+                    style={{ color: active ? "var(--color-accent)" : "inherit", flexShrink: 0 }}
+                  />
+                  <span style={{ flex: 1 }}>{label}</span>
+                  {active && (
+                    <ChevronRight size={12} style={{ color: "var(--color-accent)" }} />
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* Bottom status */}
@@ -268,6 +363,14 @@ function AppShell() {
             <Route path="/remote" component={RemotePage} />
             <Route path="/integrations" component={IntegrationsPage} />
             <Route path="/operations" component={OperationsPage} />
+            <Route path="/evidence" component={EvidenceVaultPage} />
+            <Route path="/voice" component={VoicePage} />
+            <Route path="/business" component={BusinessPage} />
+            <Route path="/it-support" component={ITSupportPage} />
+            <Route path="/homelab" component={HomeLabPage} />
+            <Route path="/digital-twin" component={DigitalTwinPage} />
+            <Route path="/inventory" component={InventoryPage} />
+            <Route path="/automotive" component={AutomotivePage} />
             <Route path="/settings" component={SettingsPage} />
             <Route>
               <Placeholder title="404 — Page Not Found" description="This route does not exist." />

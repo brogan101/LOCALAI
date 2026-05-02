@@ -19,6 +19,7 @@ import { writeManagedJson, writeManagedFile } from "../lib/snapshot-manager.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { modelRolesService } from "../lib/model-roles-service.js";
 import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
+import { proposeSelfMaintainerAction } from "../lib/self-maintainer.js";
 
 const router = Router();
 const HOME = os.homedir();
@@ -131,7 +132,7 @@ const COMPONENTS: ComponentDef[] = [
     category: "AI Routing",
     detect: async () => {
       const cmd = await commandExists("litellm");
-      const running = await fetchText("http://localhost:4000/health", undefined, 2000)
+      const running = await fetchText("http://127.0.0.1:4000/health", undefined, 2000)
         .then(() => true)
         .catch(() => false);
       return { installed: cmd, version: await maybeVersion("litellm --version"), running };
@@ -150,7 +151,7 @@ const COMPONENTS: ComponentDef[] = [
     category: "Chat UI",
     detect: async () => {
       const cmd = await commandExists("open-webui");
-      const running = await fetchText("http://localhost:8080", undefined, 2000)
+      const running = await fetchText("http://127.0.0.1:8080", undefined, 2000)
         .then(() => true)
         .catch(() => false);
       return { installed: cmd || running, version: await maybeVersion("open-webui --version"), running };
@@ -253,7 +254,7 @@ router.get("/repair/health", async (_req, res) => {
   const portStatus = await Promise.all(
     portChecks.map(async (p) => ({
       ...p,
-      reachable: await fetchText(`http://localhost:${p.port}`, undefined, 1500)
+      reachable: await fetchText(`http://127.0.0.1:${p.port}`, undefined, 1500)
         .then(() => true)
         .catch(() => false),
     }))
@@ -294,8 +295,11 @@ router.get("/repair/health", async (_req, res) => {
 });
 
 router.post("/repair/run", agentExecGuard("run repair actions"), async (req, res) => {
-  const { ids, mode = "selective" } = req.body;
-  let targetIds: string[] = ids || [];
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const { ids, mode = "selective" } = body;
+  let targetIds: string[] = Array.isArray(ids)
+    ? ids.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
   if (mode === "all-broken" || mode === "all") {
     const items = await Promise.all(COMPONENTS.map(runComponentCheck));
     targetIds = items.filter((i) => (mode === "all" || i.status !== "ok") && i.canRepair).map((i) => i.id);
@@ -315,37 +319,45 @@ router.post("/repair/run", agentExecGuard("run repair actions"), async (req, res
       results.push({ id, name: comp.name, action: "manual", success: false, message: comp.repairDescription || "Manual repair required", durationMs: Date.now() - start });
       continue;
     }
-    if (comp.repairAction === "mkdir") {
-      await ensureDir(TOOLS_DIR);
-      results.push({ id, name: comp.name, action: "mkdir", success: true, message: `Created ${TOOLS_DIR}`, durationMs: Date.now() - start });
-      continue;
-    }
-    if (comp.repairAction === "config-write" && id === "model-roles") {
-      if (!existsSync(modelRolesService.filePath)) {
-        // ensureDefaultRoles is called lazily by the service on next getRoles()
-        modelRolesService.invalidate();
-        await modelRolesService.getRoles();
-      }
-      results.push({ id, name: comp.name, action: "config-write", success: true, message: "Created default model-roles.json from bundled defaults", durationMs: Date.now() - start });
-      continue;
-    }
-    try {
-      const cmd = isWindows
-        ? `start "Repairing ${comp.name}" cmd /k "${comp.repairCmd} && echo [DONE] ${comp.name} installed successfully && timeout /t 5"`
-        : `${comp.repairCmd}`;
-      exec(cmd);
-      results.push({ id, name: comp.name, action: comp.repairAction, success: true, message: `Repair launched for ${comp.name}. Check the terminal window for progress.`, durationMs: Date.now() - start });
-    } catch (err: any) {
-      results.push({ id, name: comp.name, action: comp.repairAction, success: false, message: err.message, durationMs: Date.now() - start });
-    }
+    const unsafeRemoteInstall = /curl\s+.*\|\s*sh|wget\s+.*\|\s*sh|curl\s+.*\|\s*bash|wget\s+.*\|\s*bash/i.test(comp.repairCmd);
+    results.push({
+      id,
+      name: comp.name,
+      action: comp.repairAction,
+      success: false,
+      message: unsafeRemoteInstall
+        ? "Repair blocked: remote install script patterns must be converted to a verified/manual source before execution."
+        : "Repair proposal queued; no installer, config write, shell command, or service restart was executed.",
+      durationMs: Date.now() - start,
+      proposedOnly: true,
+      blocked: unsafeRemoteInstall,
+      commandPreview: comp.repairCmd,
+    });
     log.push({
       timestamp: new Date().toISOString(),
       id,
       action: comp.repairAction,
-      success: results[results.length - 1].success,
+      success: false,
       message: results[results.length - 1].message,
     });
   }
+  const proposed = results.filter((result) => result.proposedOnly).length;
+  const skipped = results.filter((r) => r.action === "skipped").length;
+  const proposal = proposed > 0
+    ? await proposeSelfMaintainerAction({
+        action: "repair",
+        sourceKind: "repair",
+        targetIds: targetIds,
+        dryRunOnly: false,
+        approvalId: typeof body["approvalId"] === "string" ? body["approvalId"] : undefined,
+        details: {
+          legacyRoute: "/repair/run",
+          results,
+          noRepairCommandExecuted: true,
+          noInstallerExecuted: true,
+        },
+      })
+    : undefined;
   let existing: any[] = [];
   if (existsSync(REPAIR_LOG_FILE)) {
     try {
@@ -354,9 +366,18 @@ router.post("/repair/run", agentExecGuard("run repair actions"), async (req, res
   }
   await ensureDir(TOOLS_DIR);
   await writeManagedJson(REPAIR_LOG_FILE, [...log, ...existing].slice(0, 200));
-  const launched = results.filter((r) => r.success && r.action !== "skipped").length;
-  const skipped = results.filter((r) => r.action === "skipped").length;
-  return res.json({ success: true, results, launched, skipped, message: `${launched} repair(s) launched, ${skipped} already healthy` });
+  return res.status(proposal?.approvalRequired ? 202 : proposal?.status === "blocked" ? 423 : 200).json({
+    success: false,
+    approvalRequired: proposal?.approvalRequired ?? false,
+    approval: proposal?.approval,
+    proposal: proposal?.proposal,
+    results,
+    launched: 0,
+    skipped,
+    message: proposed > 0
+      ? `Repair proposal queued for ${proposed} component(s); no repair command was executed.`
+      : `${skipped} selected component(s) already healthy or no repair command was available.`,
+  });
 });
 
 router.get("/repair/log", async (_req, res) => {
@@ -398,7 +419,7 @@ router.post("/repair/diagnose-integration/:id", async (req, res) => {
         fixes.push('pip install "litellm[proxy]"');
         return { status: "error", issues, fixes };
       }
-      const running = await fetchText("http://localhost:4000/health", undefined, 2000)
+      const running = await fetchText("http://127.0.0.1:4000/health", undefined, 2000)
         .then(() => true)
         .catch(() => false);
       if (!running) {
@@ -423,12 +444,12 @@ router.post("/repair/diagnose-integration/:id", async (req, res) => {
         fixes.push("pip install aider-chat");
         return { status: "error", issues, fixes };
       }
-      const litellmRunning = await fetchText("http://localhost:4000/health", undefined, 1500)
+      const litellmRunning = await fetchText("http://127.0.0.1:4000/health", undefined, 1500)
         .then(() => true)
         .catch(() => false);
       if (!litellmRunning) {
         issues.push('LiteLLM not running — Aider will get "LLM Provider NOT provided" error');
-        fixes.push("Start LiteLLM from Stack page, then use: aider --model openai/<model> --openai-api-base http://localhost:4000");
+        fixes.push("Start LiteLLM from Stack page, then use: aider --model openai/<model> --openai-api-base http://127.0.0.1:4000");
       }
       const ollamaOk = await ollamaReachable();
       if (!ollamaOk) {

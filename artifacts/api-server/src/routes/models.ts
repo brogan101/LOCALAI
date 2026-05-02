@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import path from "path";
@@ -23,6 +23,15 @@ import { desc, eq } from "drizzle-orm";
 import { modelRolesService } from "../lib/model-roles-service.js";
 import type { ModelRole } from "../config/models.config.js";
 import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
+import {
+  buildModelActionPayload,
+  getModelLifecycleSnapshot,
+  proposeModelLifecycleAction,
+  validateRoleAssignment,
+  verifyModelActionApproval,
+  type ModelLifecycleAction,
+} from "../lib/model-lifecycle.js";
+import { completeApproval, failApproval } from "../lib/approval-queue.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
@@ -119,6 +128,52 @@ function mapPullJobStatus(status: string): string {
   return status;
 }
 
+async function requireModelActionApproval(
+  res: Response,
+  action: ModelLifecycleAction,
+  input: { modelName?: string; currentModelName?: string; candidateModelName?: string; role?: string; approvalId?: string },
+): Promise<boolean> {
+  const payload = buildModelActionPayload({
+    action,
+    modelName: input.modelName,
+    currentModelName: input.currentModelName,
+    candidateModelName: input.candidateModelName,
+    role: input.role,
+  });
+  const verification = verifyModelActionApproval(input.approvalId, payload);
+  if (verification.allowed) return true;
+  if (input.approvalId) {
+    res.status(403).json({
+      success: false,
+      approvalRequired: true,
+      message: verification.message,
+      approval: verification.approval,
+    });
+    return false;
+  }
+  const proposal = await proposeModelLifecycleAction({
+    action,
+    modelName: input.modelName,
+    currentModelName: input.currentModelName,
+    candidateModelName: input.candidateModelName,
+    role: input.role,
+  });
+  res.status(202).json({
+    success: false,
+    approvalRequired: true,
+    message: "Model lifecycle action queued for approval. No model was pulled, loaded, unloaded, replaced, or deleted.",
+    proposal,
+    approval: proposal.approval,
+  });
+  return false;
+}
+
+function approvalIdFromBody(body: Record<string, unknown>): string | undefined {
+  return typeof body["approvalId"] === "string" && body["approvalId"].trim()
+    ? body["approvalId"].trim()
+    : undefined;
+}
+
 router.get("/tags", async (_req, res) => {
   return res.json(await getUniversalGatewayTags());
 });
@@ -171,7 +226,9 @@ router.post("/pull", agentExecGuard("pull model"), async (req, res) => {
   if (!modelName) {
     return res.status(400).json({ success: false, message: "modelName required" });
   }
+  if (!await requireModelActionApproval(res, "pull", { modelName, approvalId: approvalIdFromBody(body) })) return;
   const job = queueUniversalModelPull(modelName);
+  if (approvalIdFromBody(body)) completeApproval(approvalIdFromBody(body)!, { jobId: job.id, modelName });
   return res.json({ success: true, message: `Pull queued: ${modelName}`, jobId: job.id, modelName });
 });
 
@@ -238,6 +295,49 @@ router.get("/models/running", async (_req, res) => {
   return res.json(await getRunningGatewayModels());
 });
 
+router.get("/models/lifecycle", async (_req, res) => {
+  return res.json(await getModelLifecycleSnapshot());
+});
+
+router.get("/models/lifecycle/routing-source", (_req, res) => {
+  return res.json({
+    success: true,
+    routingSourceOfTruth: "SQLite role_assignments via modelRolesService plus Ollama gateway tags from model-orchestrator",
+    roleAssignmentsTable: "role_assignments",
+    installedModelSource: "Ollama /api/tags through getUniversalGatewayTags",
+    runningModelSource: "Ollama /api/ps through getRunningGatewayModels",
+    openAiCompatSource: "routes/openai.ts uses sendGatewayChat from model-orchestrator",
+  });
+});
+
+router.post("/models/lifecycle/actions/propose", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const action = typeof body["action"] === "string" ? body["action"] as ModelLifecycleAction : "pull";
+  const proposal = await proposeModelLifecycleAction({
+    action,
+    modelName: typeof body["modelName"] === "string" ? body["modelName"].trim() : undefined,
+    currentModelName: typeof body["currentModelName"] === "string" ? body["currentModelName"].trim() : undefined,
+    candidateModelName: typeof body["candidateModelName"] === "string" ? body["candidateModelName"].trim() : undefined,
+    role: typeof body["role"] === "string" ? body["role"].trim() : undefined,
+    dryRunOnly: body["dryRunOnly"] === true,
+    evalProof: body["evalProof"] && typeof body["evalProof"] === "object" ? body["evalProof"] as Record<string, number> : undefined,
+  });
+  return res.status(proposal.approval ? 202 : 200).json({ success: true, proposal });
+});
+
+router.post("/models/lifecycle/replacements/propose", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const proposal = await proposeModelLifecycleAction({
+    action: "replace",
+    currentModelName: typeof body["currentModelName"] === "string" ? body["currentModelName"].trim() : undefined,
+    candidateModelName: typeof body["candidateModelName"] === "string" ? body["candidateModelName"].trim() : undefined,
+    role: typeof body["role"] === "string" ? body["role"].trim() : undefined,
+    dryRunOnly: body["dryRunOnly"] === true,
+    evalProof: body["evalProof"] && typeof body["evalProof"] === "object" ? body["evalProof"] as Record<string, number> : undefined,
+  });
+  return res.status(proposal.approval ? 202 : 200).json({ success: true, proposal });
+});
+
 router.get("/models/roles", async (_req, res) => {
   const [roles, gateway] = await Promise.all([loadRoles(), getUniversalGatewayTags()]);
   const installedSet = new Set(gateway.models.map((entry: any) => entry.name));
@@ -267,6 +367,14 @@ router.put("/models/roles", agentEditsGuard("update model role assignments"), as
     const role = typeof candidate.role === "string" ? candidate.role : "";
     const model = typeof candidate.model === "string" ? candidate.model : "";
     if (!role) continue;
+    if (model && model !== "unassigned") {
+      const validation = validateRoleAssignment(role, model, {
+        allowEmbeddingForChat: candidate.allowEmbeddingForChat === true,
+      });
+      if (!validation.allowed) {
+        return res.status(400).json({ success: false, message: validation.reason });
+      }
+    }
     current[role] = model === "unassigned" ? "" : model;
   }
   await saveRoles(current);
@@ -327,7 +435,9 @@ router.post("/models/pull", agentExecGuard("pull model"), async (req, res) => {
   if (!modelName) {
     return res.status(400).json({ success: false, message: "modelName required" });
   }
+  if (!await requireModelActionApproval(res, "pull", { modelName, approvalId: approvalIdFromBody(body) })) return;
   const job = queueUniversalModelPull(modelName);
+  if (approvalIdFromBody(body)) completeApproval(approvalIdFromBody(body)!, { jobId: job.id, modelName });
   return res.json({ success: true, message: `Pull queued: ${modelName}`, jobId: job.id });
 });
 
@@ -337,6 +447,7 @@ router.post("/models/verify-install", agentExecGuard("verify and pull model"), a
   if (!modelName) {
     return res.status(400).json({ success: false, message: "modelName required" });
   }
+  if (!await requireModelActionApproval(res, "pull", { modelName, approvalId: approvalIdFromBody(body) })) return;
   const verification = await verifyOllamaModelSpec(modelName);
   if (!verification.exists) {
     return res.status(404).json({
@@ -347,6 +458,7 @@ router.post("/models/verify-install", agentExecGuard("verify and pull model"), a
   }
   const verifiedModelName = verification.spec;
   const job = queueUniversalModelPull(verifiedModelName);
+  if (approvalIdFromBody(body)) completeApproval(approvalIdFromBody(body)!, { jobId: job.id, modelName: verifiedModelName });
   return res.json({
     success: true,
     message: `Verification passed. Pull queued: ${verifiedModelName}`,
@@ -361,10 +473,13 @@ router.post("/models/load", agentExecGuard("load model into VRAM"), async (req, 
   if (!modelName) {
     return res.status(400).json({ success: false, message: "modelName required" });
   }
+  if (!await requireModelActionApproval(res, "load", { modelName, approvalId: approvalIdFromBody(body) })) return;
   try {
     await loadOllamaModel(modelName);
+    if (approvalIdFromBody(body)) completeApproval(approvalIdFromBody(body)!, { modelName, action: "load" });
     return res.json({ success: true, message: `${modelName} loaded into VRAM` });
   } catch (error) {
+    if (approvalIdFromBody(body)) failApproval(approvalIdFromBody(body)!, error instanceof Error ? error.message : String(error));
     return res.json({ success: false, message: error instanceof Error ? error.message : String(error) });
   }
 });
@@ -375,10 +490,13 @@ router.post("/models/stop", agentExecGuard("unload model from VRAM"), async (req
   if (!modelName) {
     return res.status(400).json({ success: false, message: "modelName required" });
   }
+  if (!await requireModelActionApproval(res, "unload", { modelName, approvalId: approvalIdFromBody(body) })) return;
   try {
     await unloadOllamaModel(modelName);
+    if (approvalIdFromBody(body)) completeApproval(approvalIdFromBody(body)!, { modelName, action: "unload" });
     return res.json({ success: true, message: `${modelName} unloaded from VRAM` });
   } catch (error) {
+    if (approvalIdFromBody(body)) failApproval(approvalIdFromBody(body)!, error instanceof Error ? error.message : String(error));
     return res.json({ success: false, message: error instanceof Error ? error.message : String(error) });
   }
 });
@@ -403,10 +521,14 @@ router.get("/models/pull-status", async (_req, res) => {
 
 router.delete("/models/:modelName/delete", agentExecGuard((req) => `delete model ${String(req.params.modelName)}`), async (req, res) => {
   const modelName = decodeURIComponent(String(req.params.modelName));
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  if (!await requireModelActionApproval(res, "delete", { modelName, approvalId: approvalIdFromBody(body) })) return;
   try {
     await deleteOllamaModel(modelName);
+    if (approvalIdFromBody(body)) completeApproval(approvalIdFromBody(body)!, { modelName, action: "delete" });
     return res.json({ success: true, message: `Deleted: ${modelName}` });
   } catch (error) {
+    if (approvalIdFromBody(body)) failApproval(approvalIdFromBody(body)!, error instanceof Error ? error.message : String(error));
     return res.json({
       success: false,
       message: `Failed to delete ${modelName}`,

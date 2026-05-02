@@ -7,7 +7,7 @@ import {
   HardDrive, Server, Wrench, Search, Sparkles, Play, ArrowRight,
   MonitorCheck, Wifi, WifiOff, BarChart2,
   Code2, Box, Image, FileText, BookOpen, Car, Terminal,
-  FileSearch, Printer, Download,
+  FileSearch, Printer, Download, Clock, ShieldAlert,
 } from "lucide-react";
 import api, { apiErrorMessage, type ThoughtEntry, type RepairHealthEntry, type HardwareSnapshot, type WorkspacePreset } from "../api.js";
 import { PermissionNotice } from "../components/PermissionNotice.js";
@@ -265,7 +265,7 @@ function HealthCard({ onNavigate }: { onNavigate: (path: string) => void }) {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
             style={{ background: "var(--color-accent)", color: "#fff", opacity: repairMut.isPending ? 0.6 : 1 }}>
             <Wrench size={11} />
-            {repairMut.isPending ? "Repairing…" : `Repair ${issues.length} issue${issues.length !== 1 ? "s" : ""}`}
+            {repairMut.isPending ? "Proposing…" : `Propose repair for ${issues.length} issue${issues.length !== 1 ? "s" : ""}`}
           </button>
         )}
         <button
@@ -276,7 +276,9 @@ function HealthCard({ onNavigate }: { onNavigate: (path: string) => void }) {
         </button>
       </div>
       {repairMut.isSuccess && (
-        <div className="text-xs mt-1" style={{ color: "var(--color-success)" }}>Repair complete</div>
+        <div className="text-xs mt-1" style={{ color: "var(--color-warn)" }}>
+          {repairMut.data?.message ?? "Repair proposal queued; no repair command was executed."}
+        </div>
       )}
     </div>
   );
@@ -910,6 +912,148 @@ function PullStackButton() {
   );
 }
 
+// ── Phase 20: Runtime mode status card ───────────────────────────────────────
+
+function RuntimeModeCard({ onNavigate }: { onNavigate: (p: string) => void }) {
+  const { data } = useQuery({
+    queryKey: ["runtime-mode"],
+    queryFn: () => api.runtime.get(),
+    refetchInterval: 10_000,
+  });
+
+  const mode = data?.mode ?? "Unknown";
+  const physicalActionsDisabled = data?.physicalActionsDisabled ?? false;
+
+  const modeColor =
+    mode === "EmergencyStop" ? "var(--color-error)"   :
+    mode === "Gaming"        ? "var(--color-warn)"    :
+    mode === "Coding"        ? "var(--color-info)"    :
+    mode === "Lightweight"   ? "var(--color-success)" :
+                               "var(--color-success)";
+
+  return (
+    <div
+      className="rounded-xl p-3 cursor-pointer hover:opacity-90"
+      data-testid="runtime-mode-card"
+      style={{
+        background: "var(--color-surface)",
+        border: `1px solid color-mix(in srgb, ${modeColor} 25%, var(--color-border))`,
+      }}
+      onClick={() => onNavigate("/operations")}
+    >
+      <div className="flex items-center gap-2">
+        <div className="w-2 h-2 rounded-full shrink-0" style={{ background: modeColor }} />
+        <span className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>Runtime Mode</span>
+        <span
+          className="text-xs font-semibold ml-auto px-1.5 py-0.5 rounded"
+          style={{
+            background: `color-mix(in srgb, ${modeColor} 12%, transparent)`,
+            color: modeColor,
+          }}
+        >
+          {mode}
+        </span>
+      </div>
+      {physicalActionsDisabled && (
+        <div className="flex items-center gap-1 mt-1.5 text-xs" style={{ color: "var(--color-warn)" }}>
+          <ShieldAlert size={10} />
+          Physical actions disabled
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Phase 20: Pending approvals card ─────────────────────────────────────────
+
+function PendingApprovalsCard({ onNavigate }: { onNavigate: (p: string) => void }) {
+  const { data } = useQuery({
+    queryKey: ["approvals-dash"],
+    queryFn: () => api.approvals.list(50),
+    refetchInterval: 15_000,
+  });
+
+  const pending = (data?.approvals ?? []).filter(
+    a => a.status === "waiting_for_approval",
+  ).length;
+
+  const color = pending > 0 ? "var(--color-warn)" : "var(--color-success)";
+
+  return (
+    <div
+      className="rounded-xl p-3 cursor-pointer hover:opacity-90"
+      data-testid="pending-approvals-card"
+      style={{
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border)",
+      }}
+      onClick={() => onNavigate("/operations")}
+    >
+      <div className="flex items-center gap-2">
+        <Clock size={12} style={{ color, flexShrink: 0 }} />
+        <span className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>Approvals</span>
+        <span
+          className="text-xs font-semibold ml-auto px-1.5 py-0.5 rounded"
+          style={{
+            background: `color-mix(in srgb, ${color} 12%, transparent)`,
+            color,
+          }}
+        >
+          {pending > 0 ? `${pending} pending` : "None pending"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 20: Updater / maintainer status card ────────────────────────────────
+
+function UpdaterStatusCard({ onNavigate }: { onNavigate: (p: string) => void }) {
+  const { data } = useQuery({
+    queryKey: ["updater-dash"],
+    queryFn: () => api.updater.selfMaintainer(),
+    staleTime: 120_000,
+    retry: false,
+  });
+
+  const proposals = data?.proposals?.length ?? 0;
+  const dryRunOnly = data?.dryRunOnly ?? true;
+  const color = proposals > 0 ? "var(--color-info)" : "var(--color-muted)";
+
+  return (
+    <div
+      className="rounded-xl p-3 cursor-pointer hover:opacity-90"
+      data-testid="updater-status-card"
+      style={{
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border)",
+      }}
+      onClick={() => onNavigate("/operations")}
+    >
+      <div className="flex items-center gap-2">
+        <RefreshCw size={12} style={{ color, flexShrink: 0 }} />
+        <span className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>Updater</span>
+        <span
+          className="text-xs font-semibold ml-auto px-1.5 py-0.5 rounded"
+          style={{
+            background: `color-mix(in srgb, ${color} 12%, transparent)`,
+            color,
+          }}
+        >
+          {proposals > 0
+            ? `${proposals} proposal${proposals !== 1 ? "s" : ""}`
+            : "No proposals"}
+        </span>
+        {dryRunOnly && (
+          <span className="text-xs opacity-60" style={{ color: "var(--color-muted)" }}>
+            dry-run
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -997,6 +1141,13 @@ export default function Dashboard() {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
+
+        {/* ── Status strip: Runtime Mode · Pending Approvals · Updater (Phase 20) ── */}
+        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+          <RuntimeModeCard onNavigate={navigate} />
+          <PendingApprovalsCard onNavigate={navigate} />
+          <UpdaterStatusCard onNavigate={navigate} />
+        </div>
 
         {/* ── Row 1: System card + VRAM Budget + Health + Kill Switch stat ── */}
         <div className="grid gap-3" style={{ gridTemplateColumns: "2fr 1fr 1fr 1fr" }}>

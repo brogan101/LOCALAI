@@ -25,8 +25,25 @@ import {
 import { isDangerousCommand } from "../lib/command-sanitizer.js";
 import { taskQueue } from "../lib/task-queue.js";
 import { thoughtLog } from "../lib/thought-log.js";
+import {
+  completeApproval,
+  createApprovalRequest,
+  failApproval,
+  verifyApprovedRequest,
+} from "../lib/approval-queue.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { probeHardware } from "../lib/hardware-probe.js";
+import { assertPhysicalActionsAllowed } from "../lib/runtime-mode.js";
+import { proposeSelfMaintainerAction } from "../lib/self-maintainer.js";
+import {
+  createBackupManifest,
+  createRestoreDryRun,
+  getInstallPlan,
+  getRecoveryStatus,
+  listBackupManifests,
+  requestRestoreApproval,
+  validateBackupManifest,
+} from "../lib/packaging-recovery.js";
 import {
   requireAgentEdits,
   requireAgentExec as requireExecPermission,
@@ -456,32 +473,32 @@ router.post("/system/setup/repair", async (req, res) => {
     else if (pipMap[id]) cmds.push(`python -m pip install ${pipMap[id]}`);
   }
   if (cmds.length > 0) {
-    const queuedJob = taskQueue.enqueue(
-      "System Repair",
-      "system-repair",
-      async ({ updateProgress, publishThought }: any) => {
-        publishThought("Repair Started", "Repair commands entered the async queue", { commandCount: cmds.length });
-        updateProgress(10, "Launching repair commands", { cmds });
-        await new Promise<void>((resolve, reject) => {
-          exec(cmds.join(" && "), { timeout: 300000 }, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-        updateProgress(100, "Repair commands completed", { cmds });
-        return { commands: cmds };
+    const proposal = await proposeSelfMaintainerAction({
+      action: "repair",
+      sourceKind: "repair",
+      targetIds: repairIds,
+      dryRunOnly: false,
+      approvalId: typeof req.body?.approvalId === "string" ? req.body.approvalId : undefined,
+      details: {
+        legacyRoute: "/system/setup/repair",
+        commandPreview: cmds,
+        noRepairCommandExecuted: true,
+        noInstallerExecuted: true,
       },
-      { capability: "sysadmin", metadata: { cmds } }
-    );
-    thoughtLog.publish({
-      category: "system",
-      title: "Repair Queued",
-      message: `Queued ${cmds.length} repair command(s)`,
-      metadata: { jobId: queuedJob.id, cmds },
     });
-    const message = `Repair queued for ${cmds.length} component(s). Job ${queuedJob.id} is now running asynchronously.`;
+    thoughtLog.publish({
+      level: "warning",
+      category: "system",
+      title: "Repair Proposal Queued",
+      message: `Queued approval proposal for ${cmds.length} repair command(s); no command executed`,
+      metadata: { approvalId: proposal.approval?.id, proposalId: proposal.proposal.id },
+    });
+    const message = `Repair proposal queued for ${cmds.length} component(s). No install or repair command was executed.`;
     await appendActivity("repair", "success", message);
-    return res.json({ success: true, message, jobId: queuedJob.id });
+    return res.status(proposal.approvalRequired ? 202 : proposal.status === "blocked" ? 423 : 200).json({
+      ...proposal,
+      message,
+    });
   }
   const message = cmds.length > 0 ? `Repair started for ${cmds.length} component(s). This may take several minutes.` : `No auto-repair available for selected items.`;
   await appendActivity("repair", "success", message);
@@ -520,6 +537,71 @@ router.get("/system/storage", async (_req, res) => {
   return res.json({ items, totalBytes, totalFormatted: formatBytes(totalBytes), modelsBytes, modelsFormatted: formatBytes(modelsBytes) });
 });
 
+// ── Phase 21 recovery / packaging / DR routes ────────────────────────────────
+
+router.get("/system/recovery/status", async (_req, res) => {
+  return res.json(getRecoveryStatus());
+});
+
+router.get("/system/recovery/install-plan", async (_req, res) => {
+  return res.json(getInstallPlan());
+});
+
+router.get("/system/recovery/backups", async (req, res) => {
+  const limit = Math.min(Number(req.query["limit"]) || 20, 100);
+  return res.json({ success: true, backups: listBackupManifests(limit) });
+});
+
+router.post("/system/recovery/backups", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const dryRun = body["dryRun"] !== false;
+  const manifest = await createBackupManifest({ dryRun });
+  return res.status(dryRun ? 200 : 201).json({
+    success: true,
+    manifest,
+    message: dryRun
+      ? "Backup manifest dry-run created; no files or system settings were modified."
+      : "Metadata-only backup manifest created; no raw secrets or model blobs were included.",
+  });
+});
+
+router.post("/system/recovery/restore/validate", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const manifestId = typeof body["manifestId"] === "string" ? body["manifestId"].trim() : "";
+  if (!manifestId) return res.status(400).json({ success: false, message: "manifestId is required" });
+  const result = validateBackupManifest(manifestId);
+  return res.status(result.status === "validation_passed" ? 200 : 422).json({ success: result.status === "validation_passed", result });
+});
+
+router.post("/system/recovery/restore/dry-run", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const manifestId = typeof body["manifestId"] === "string" ? body["manifestId"].trim() : "";
+  if (!manifestId) return res.status(400).json({ success: false, message: "manifestId is required" });
+  const plan = createRestoreDryRun(manifestId);
+  return res.status(plan.dryRunResult.status === "validation_passed" ? 200 : 422).json({
+    success: plan.dryRunResult.status === "validation_passed",
+    plan,
+    message: "Restore dry-run completed; live data was not modified.",
+  });
+});
+
+router.post("/system/recovery/restore/propose", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const manifestId = typeof body["manifestId"] === "string" ? body["manifestId"].trim() : "";
+  if (!manifestId) return res.status(400).json({ success: false, message: "manifestId is required" });
+  const result = requestRestoreApproval({
+    manifestId,
+    currentBackupManifestId: typeof body["currentBackupManifestId"] === "string" ? body["currentBackupManifestId"].trim() : undefined,
+    approvalId: typeof body["approvalId"] === "string" ? body["approvalId"].trim() : undefined,
+  });
+  const status =
+    result.status === "approval_required" ? 202 :
+    result.status === "restore_blocked" ? 423 :
+    result.status === "not_configured" ? 501 :
+    200;
+  return res.status(status).json({ success: result.status === "approval_required" || result.status === "approved", ...result });
+});
+
 // ── Sovereign self-edit endpoints ─────────────────────────────────────────────
 
 // POST /system/sovereign/preview — diff preview without writing
@@ -545,13 +627,38 @@ router.post("/system/sovereign/edit", async (req, res) => {
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const filePath   = typeof body.filePath   === "string" ? body.filePath   : "";
   const newContent = typeof body.newContent === "string" ? body.newContent : "";
+  const approvalId = typeof body.approvalId === "string" ? body.approvalId : undefined;
   if (!filePath || !newContent) {
     return res.status(400).json({ success: false, message: "filePath and newContent are required" });
   }
   try {
+    const proposal = await proposeSelfEdit(filePath, newContent);
+    const approvalPayload = {
+      filePath: proposal.filePath,
+      newContent,
+      diff: proposal.diff,
+      rollback: { backupBeforeApply: true },
+    };
+    if (!approvalId) {
+      const approval = createApprovalRequest({
+        type: "file_modification",
+        title: "Apply self-edit",
+        summary: `Modify ${proposal.filePath}`,
+        riskTier: "tier3_file_modification",
+        requestedAction: "system.sovereign.edit",
+        payload: approvalPayload,
+      });
+      return res.status(202).json({ success: false, approvalRequired: true, approval, message: "Self-edit queued for approval and was not executed." });
+    }
+    const verified = verifyApprovedRequest(approvalId, approvalPayload, "file_modification");
+    if (!verified.allowed) {
+      return res.status(403).json({ success: false, blocked: true, approvalRequired: true, message: verified.message, approval: verified.approval });
+    }
     const result = await sovereignEdit(filePath, newContent);
+    completeApproval(approvalId, { filePath: result.filePath, message: result.message });
     return res.json(result);
   } catch (error) {
+    if (approvalId) failApproval(approvalId, error instanceof Error ? error.message : String(error));
     return res.status(400).json({ success: false, message: error instanceof Error ? error.message : String(error) });
   }
 });
@@ -577,6 +684,8 @@ router.get("/system/windows", async (req, res) => {
 // POST /system/windows/focus — bring a window to the foreground
 router.post("/system/windows/focus", async (req, res) => {
   if (!await requireExecPermission(res, "focus desktop window")) return;
+  const physical = assertPhysicalActionsAllowed("system.windows.focus");
+  if (!physical.allowed) return res.status(physical.status).json(physical.payload);
   const body = typeof req.body === "object" && req.body !== null ? req.body : {};
   const pattern = typeof body.pattern === "string" ? body.pattern.trim() : "";
   if (!pattern) return res.status(400).json({ success: false, message: "pattern required" });
@@ -603,6 +712,8 @@ router.post("/system/macros", async (req, res) => {
 // POST /system/macros/:name/run — execute a named macro
 router.post("/system/macros/:name/run", async (req, res) => {
   if (!await requireExecPermission(res, "run system macro")) return;
+  const physical = assertPhysicalActionsAllowed("system.macros.run");
+  if (!physical.allowed) return res.status(physical.status).json(physical.payload);
   const { name } = req.params;
   const result = await runMacro(name);
   return res.json(result);
@@ -618,21 +729,48 @@ router.post("/system/exec/run", async (req, res) => {
   const cwd            = typeof body.cwd            === "string"  ? body.cwd.trim()      : undefined;
   const timeoutMs      = typeof body.timeoutMs      === "number"  ? body.timeoutMs       : 60_000;
   const forceDangerous = typeof body.forceDangerous === "boolean" ? body.forceDangerous  : false;
+  const approvalId     = typeof body.approvalId     === "string"  ? body.approvalId      : undefined;
   if (!command) return res.status(400).json({ success: false, message: "command is required" });
 
   const sanity = isDangerousCommand(command);
   if (sanity.dangerous) {
-    const settings = await loadSettings();
-    if (!forceDangerous || settings.requireActionConfirmation) {
-      thoughtLog.publish({ level: "error", category: "security", title: "Dangerous Command Blocked", message: `${sanity.reason}: ${command}` });
-      return res.status(403).json({ success: false, reason: sanity.reason, blocked: true });
-    }
+    const reason = sanity.reason ?? "Dangerous command blocked";
+    const approval = createApprovalRequest({
+      type: "command_execute",
+      title: "Dangerous command blocked",
+      summary: reason,
+      riskTier: "tier5_manual_only_prohibited",
+      requestedAction: "system.exec.run",
+      payload: { command, cwd, timeoutMs, forceDangerous },
+    });
+    thoughtLog.publish({ level: "error", category: "security", title: "Dangerous Command Blocked", message: `${reason}: ${command}`, metadata: { approvalId: approval.id } });
+    return res.status(403).json({ success: false, reason, blocked: true, approval });
+  }
+
+  const approvalPayload = { command, cwd, timeoutMs };
+  if (!approvalId) {
+    const approval = createApprovalRequest({
+      type: "command_execute",
+      title: "Run shell command",
+      summary: command,
+      riskTier: "tier2_safe_local_execute",
+      requestedAction: "system.exec.run",
+      payload: approvalPayload,
+    });
+    return res.status(202).json({ success: false, approvalRequired: true, approval, message: "Command queued for approval and was not executed." });
+  }
+
+  const verified = verifyApprovedRequest(approvalId, approvalPayload, "command_execute");
+  if (!verified.allowed) {
+    return res.status(403).json({ success: false, blocked: true, approvalRequired: true, message: verified.message, approval: verified.approval });
   }
 
   try {
     const result = await runCommand(command, { cwd, timeoutMs, streamToThoughts: true });
+    completeApproval(approvalId, { exitCode: result.exitCode, stdoutBytes: result.stdout?.length ?? 0, stderrBytes: result.stderr?.length ?? 0 });
     return res.json(result);
   } catch (err: any) {
+    failApproval(approvalId, err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -717,6 +855,8 @@ router.get("/system/os/windows", async (req, res) => {
 // POST /system/os/focus — focus a window by title pattern
 router.post("/system/os/focus", async (req, res) => {
   if (!await requireAgentExec(res)) return;
+  const physical = assertPhysicalActionsAllowed("system.os.focus");
+  if (!physical.allowed) return res.status(physical.status).json(physical.payload);
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
   const pattern = typeof body["pattern"] === "string" ? body["pattern"].trim() : "";
   if (!pattern) return res.status(400).json({ success: false, message: "pattern required" });
@@ -731,6 +871,8 @@ router.post("/system/os/focus", async (req, res) => {
 // POST /system/os/send-keys — send key strokes to the focused window
 router.post("/system/os/send-keys", async (req, res) => {
   if (!await requireAgentExec(res)) return;
+  const physical = assertPhysicalActionsAllowed("system.os.send-keys");
+  if (!physical.allowed) return res.status(physical.status).json(physical.payload);
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
   const keys           = typeof body["keys"]           === "string"  ? body["keys"] as string           : "";
   const forceDangerous = typeof body["forceDangerous"] === "boolean" ? body["forceDangerous"] as boolean : false;
@@ -754,6 +896,8 @@ router.post("/system/os/send-keys", async (req, res) => {
 // POST /system/os/type-text — type literal text into the focused window
 router.post("/system/os/type-text", async (req, res) => {
   if (!await requireAgentExec(res)) return;
+  const physical = assertPhysicalActionsAllowed("system.os.type-text");
+  if (!physical.allowed) return res.status(physical.status).json(physical.payload);
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
   const text           = typeof body["text"]           === "string"  ? body["text"] as string           : "";
   const forceDangerous = typeof body["forceDangerous"] === "boolean" ? body["forceDangerous"] as boolean : false;
@@ -777,6 +921,8 @@ router.post("/system/os/type-text", async (req, res) => {
 // POST /system/os/click — click at screen coordinates
 router.post("/system/os/click", async (req, res) => {
   if (!await requireAgentExec(res)) return;
+  const physical = assertPhysicalActionsAllowed("system.os.click");
+  if (!physical.allowed) return res.status(physical.status).json(physical.payload);
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
   const x = typeof body["x"] === "number" ? body["x"] : Number(body["x"]);
   const y = typeof body["y"] === "number" ? body["y"] : Number(body["y"]);

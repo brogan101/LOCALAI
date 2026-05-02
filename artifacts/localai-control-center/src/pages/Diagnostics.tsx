@@ -255,7 +255,7 @@ export default function DiagnosticsPage() {
                 onClick={() => runRepair.mutate([...selectedIds])}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
                 style={{ background: "var(--color-accent)", color: "#fff", opacity: runRepair.isPending ? 0.6 : 1 }}>
-                {runRepair.isPending ? "Repairing…" : `Repair ${selectedIds.size} selected`}
+                {runRepair.isPending ? "Proposing…" : `Propose ${selectedIds.size} repair${selectedIds.size !== 1 ? "s" : ""}`}
               </button>
             )}
           </div>

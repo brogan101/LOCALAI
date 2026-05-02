@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { exec } from "child_process";
 import { promisify } from "util";
+import { exec } from "child_process";
 import { agentExecGuard } from "../lib/route-guards.js";
+import { proposeSelfMaintainerAction } from "../lib/self-maintainer.js";
 
 const router = Router();
 const execAsync = promisify(exec);
@@ -53,8 +54,23 @@ router.post("/system/updates/run", agentExecGuard("run system updates"), async (
   if (wingetIds.length > 0) cmds.push(`winget upgrade --id ${wingetIds.join(" --id ")} --silent --accept-package-agreements --accept-source-agreements`);
   if (pipNames.length  > 0) cmds.push(`python -m pip install --upgrade ${pipNames.join(" ")}`);
   if (cmds.length > 0) {
-    exec(cmds.join(" && "), { timeout: 300000 });
-    return res.json({ success: true, message: `Update started for ${toUpdate.map(i => i.name).join(", ")}. This may take several minutes.` });
+    const result = await proposeSelfMaintainerAction({
+      action: "stage",
+      sourceKind: "package_dependency",
+      targetIds: toUpdate.map((item) => item.id),
+      dryRunOnly: false,
+      approvalId: typeof body["approvalId"] === "string" ? body["approvalId"] : undefined,
+      details: {
+        legacyRoute: "/system/updates/run",
+        commandPreview: cmds,
+        noCommandExecuted: true,
+        noPackageManagerUpdateExecuted: true,
+      },
+    });
+    return res.status(result.approvalRequired ? 202 : result.status === "blocked" ? 423 : 200).json({
+      ...result,
+      message: result.message,
+    });
   }
   return res.json({ success: false, message: "No updatable items selected" });
 });

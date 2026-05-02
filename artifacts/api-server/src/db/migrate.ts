@@ -60,6 +60,22 @@ export function runMigrations(): void {
       updated_at  TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS service_policies (
+      id                       TEXT PRIMARY KEY,
+      display_name             TEXT NOT NULL,
+      startup_policy           TEXT NOT NULL,
+      allowed_modes_json       TEXT NOT NULL,
+      resource_class           TEXT NOT NULL,
+      health_check             TEXT,
+      stop_command             TEXT,
+      emergency_stop_behavior  TEXT NOT NULL,
+      requires_approval        INTEGER NOT NULL DEFAULT 0,
+      updated_at               TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_service_policies_resource_class
+      ON service_policies(resource_class);
+
     CREATE TABLE IF NOT EXISTS capability_state (
       id              TEXT PRIMARY KEY,
       enabled         INTEGER NOT NULL DEFAULT 1,
@@ -79,7 +95,11 @@ export function runMigrations(): void {
       date              TEXT PRIMARY KEY,
       tokens_in         INTEGER NOT NULL DEFAULT 0,
       tokens_out        INTEGER NOT NULL DEFAULT 0,
-      cost_estimate_usd REAL    NOT NULL DEFAULT 0
+      cost_estimate_usd REAL    NOT NULL DEFAULT 0,
+      local_tokens      INTEGER NOT NULL DEFAULT 0,
+      cloud_tokens      INTEGER NOT NULL DEFAULT 0,
+      local_cost_usd    REAL    NOT NULL DEFAULT 0,
+      cloud_cost_usd    REAL    NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS thought_log (
@@ -207,13 +227,424 @@ export function runMigrations(): void {
     CREATE INDEX IF NOT EXISTS idx_pinboard_items_created
       ON pinboard_items(created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS rag_collections (
+      id                   TEXT PRIMARY KEY,
+      name                 TEXT NOT NULL,
+      created_at           TEXT NOT NULL,
+      updated_at           TEXT,
+      vector_provider      TEXT NOT NULL DEFAULT 'hnswlib',
+      provider_status_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS rag_sources (
+      id                     TEXT PRIMARY KEY,
+      collection_id          TEXT NOT NULL,
+      source                 TEXT NOT NULL,
+      source_path            TEXT,
+      source_hash            TEXT NOT NULL,
+      parser_used            TEXT NOT NULL,
+      chunk_count            INTEGER NOT NULL DEFAULT 0,
+      citation_metadata_json TEXT NOT NULL DEFAULT '{}',
+      provider_status_json   TEXT NOT NULL DEFAULT '{}',
+      status                 TEXT NOT NULL DEFAULT 'indexed',
+      updated_at             TEXT NOT NULL,
+      deleted_at             TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rag_sources_collection_source
+      ON rag_sources(collection_id, source);
+
+    CREATE TABLE IF NOT EXISTS rag_chunks (
+      id                     TEXT PRIMARY KEY,
+      collection_id          TEXT NOT NULL,
+      source_id              TEXT,
+      label                  INTEGER NOT NULL,
+      source                 TEXT NOT NULL,
+      chunk_index            INTEGER NOT NULL,
+      text                   TEXT NOT NULL,
+      embedding_json         TEXT,
+      citation_metadata_json TEXT NOT NULL DEFAULT '{}',
+      provider_status_json   TEXT NOT NULL DEFAULT '{}',
+      stale                  INTEGER NOT NULL DEFAULT 0,
+      created_at             TEXT NOT NULL,
+      updated_at             TEXT,
+      deleted_at             TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS rag_chunks_collection ON rag_chunks(collection_id);
+    CREATE INDEX IF NOT EXISTS rag_chunks_label ON rag_chunks(collection_id, label);
+
     CREATE TABLE IF NOT EXISTS session_token_budgets (
       session_id    TEXT PRIMARY KEY,
       budget_tokens INTEGER NOT NULL,
       used_tokens   INTEGER NOT NULL DEFAULT 0,
       updated_at    TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS workspace_roots (
+      id         TEXT PRIMARY KEY,
+      label      TEXT NOT NULL,
+      root_path  TEXT NOT NULL UNIQUE,
+      source     TEXT NOT NULL DEFAULT 'system',
+      enabled    INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_roots_enabled
+      ON workspace_roots(enabled, root_path);
+
+    CREATE TABLE IF NOT EXISTS local_profiles (
+      id            TEXT PRIMARY KEY,
+      scope         TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      settings_json TEXT NOT NULL DEFAULT '{}',
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS integration_state (
+      id              TEXT PRIMARY KEY,
+      state_json      TEXT NOT NULL DEFAULT '{}',
+      installed       INTEGER NOT NULL DEFAULT 0,
+      running         INTEGER NOT NULL DEFAULT 0,
+      pinned          INTEGER NOT NULL DEFAULT 0,
+      last_checked_at TEXT,
+      last_error      TEXT,
+      updated_at      TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS plugin_state (
+      id               TEXT PRIMARY KEY,
+      enabled          INTEGER NOT NULL DEFAULT 1,
+      installed        INTEGER NOT NULL DEFAULT 0,
+      permissions_json TEXT NOT NULL DEFAULT '{}',
+      state_json       TEXT NOT NULL DEFAULT '{}',
+      updated_at       TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS permission_policies (
+      id         TEXT PRIMARY KEY,
+      scope      TEXT NOT NULL,
+      subject    TEXT NOT NULL DEFAULT '*',
+      action     TEXT NOT NULL,
+      effect     TEXT NOT NULL DEFAULT 'allow',
+      reason     TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_permission_policies_lookup
+      ON permission_policies(scope, subject, action);
+
+    CREATE TABLE IF NOT EXISTS durable_jobs (
+      id               TEXT PRIMARY KEY,
+      kind             TEXT NOT NULL,
+      state            TEXT NOT NULL DEFAULT 'queued',
+      priority         INTEGER NOT NULL DEFAULT 0,
+      payload_json     TEXT NOT NULL DEFAULT '{}',
+      checkpoint_json  TEXT NOT NULL DEFAULT '{}',
+      retry_count      INTEGER NOT NULL DEFAULT 0,
+      result_json      TEXT,
+      error            TEXT,
+      session_id       TEXT,
+      workspace_id     TEXT,
+      lease_owner      TEXT,
+      lease_expires_at TEXT,
+      started_at       TEXT,
+      finished_at      TEXT,
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_durable_jobs_state_priority
+      ON durable_jobs(state, priority DESC, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS approval_requests (
+      id               TEXT PRIMARY KEY,
+      type             TEXT NOT NULL,
+      title            TEXT NOT NULL,
+      summary          TEXT NOT NULL,
+      risk_tier        TEXT NOT NULL,
+      physical_tier    TEXT,
+      requested_action TEXT NOT NULL,
+      payload_hash     TEXT NOT NULL,
+      payload_json     TEXT NOT NULL DEFAULT '{}',
+      status           TEXT NOT NULL DEFAULT 'waiting_for_approval',
+      job_id           TEXT,
+      audit_id         TEXT,
+      requested_at     TEXT NOT NULL,
+      approved_at      TEXT,
+      denied_at        TEXT,
+      cancelled_at     TEXT,
+      expires_at       TEXT,
+      result_json      TEXT,
+      FOREIGN KEY(job_id) REFERENCES durable_jobs(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_approval_requests_status
+      ON approval_requests(status, requested_at DESC);
+
+    CREATE TABLE IF NOT EXISTS job_events (
+      id            TEXT PRIMARY KEY,
+      job_id        TEXT NOT NULL,
+      event_type    TEXT NOT NULL,
+      message       TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at    TEXT NOT NULL,
+      FOREIGN KEY(job_id) REFERENCES durable_jobs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_job_events_job_created
+      ON job_events(job_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id            TEXT PRIMARY KEY,
+      event_type    TEXT NOT NULL,
+      action        TEXT NOT NULL,
+      actor         TEXT NOT NULL DEFAULT 'local-user',
+      target        TEXT,
+      result        TEXT NOT NULL DEFAULT 'success',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at    TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_events_created
+      ON audit_events(created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_audit_events_type
+      ON audit_events(event_type, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS artifact_records (
+      id            TEXT PRIMARY KEY,
+      kind          TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      path          TEXT,
+      workspace_id  TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_artifact_records_workspace
+      ON artifact_records(workspace_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS meeting_sessions (
+      id                TEXT PRIMARY KEY,
+      status            TEXT NOT NULL DEFAULT 'idle',
+      capture_mode      TEXT NOT NULL DEFAULT 'push_to_talk',
+      started_at        TEXT,
+      stopped_at        TEXT,
+      word_count        INTEGER NOT NULL DEFAULT 0,
+      summary_text      TEXT NOT NULL DEFAULT '',
+      decisions_json    TEXT NOT NULL DEFAULT '[]',
+      action_items_json TEXT NOT NULL DEFAULT '[]',
+      created_at        TEXT NOT NULL,
+      updated_at        TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_meeting_sessions_created
+      ON meeting_sessions(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS follow_up_drafts (
+      id           TEXT PRIMARY KEY,
+      meeting_id   TEXT NOT NULL,
+      type         TEXT NOT NULL,
+      subject      TEXT NOT NULL,
+      body_preview TEXT NOT NULL DEFAULT '',
+      status       TEXT NOT NULL DEFAULT 'draft',
+      approval_id  TEXT,
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      FOREIGN KEY(meeting_id) REFERENCES meeting_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_follow_up_drafts_meeting
+      ON follow_up_drafts(meeting_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS business_drafts (
+      id                  TEXT PRIMARY KEY,
+      module_id           TEXT NOT NULL,
+      type                TEXT NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'draft',
+      adapter_id          TEXT,
+      inbound_summary     TEXT NOT NULL DEFAULT '',
+      suggested_response  TEXT NOT NULL DEFAULT '',
+      crm_note            TEXT NOT NULL DEFAULT '',
+      calendar_slot_json  TEXT NOT NULL DEFAULT '{}',
+      approval_id         TEXT,
+      source              TEXT NOT NULL DEFAULT 'manual',
+      privacy_json        TEXT NOT NULL DEFAULT '{}',
+      metadata_json       TEXT NOT NULL DEFAULT '{}',
+      created_at          TEXT NOT NULL,
+      updated_at          TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_business_drafts_status
+      ON business_drafts(status, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_business_drafts_module
+      ON business_drafts(module_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS it_support_artifacts (
+      id                       TEXT PRIMARY KEY,
+      workflow_type            TEXT NOT NULL,
+      status                   TEXT NOT NULL DEFAULT 'draft',
+      title                    TEXT NOT NULL,
+      request_summary          TEXT NOT NULL DEFAULT '',
+      script_language          TEXT,
+      script_body              TEXT NOT NULL DEFAULT '',
+      safety_contract_json     TEXT NOT NULL DEFAULT '{}',
+      integration_status_json  TEXT NOT NULL DEFAULT '[]',
+      approval_id              TEXT,
+      execution_mode           TEXT NOT NULL DEFAULT 'review',
+      command_preview          TEXT NOT NULL DEFAULT '',
+      output_preview           TEXT NOT NULL DEFAULT '',
+      metadata_json            TEXT NOT NULL DEFAULT '{}',
+      created_at               TEXT NOT NULL,
+      updated_at               TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_it_support_artifacts_workflow
+      ON it_support_artifacts(workflow_type, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_it_support_artifacts_status
+      ON it_support_artifacts(status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS maker_projects (
+      id                  TEXT PRIMARY KEY,
+      name                TEXT NOT NULL,
+      type                TEXT NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'draft',
+      safety_tier         TEXT NOT NULL DEFAULT 'simulate',
+      physical_tier       TEXT NOT NULL DEFAULT 'p1_suggest',
+      related_files_json  TEXT NOT NULL DEFAULT '[]',
+      cad_files_json      TEXT NOT NULL DEFAULT '[]',
+      sliced_files_json   TEXT NOT NULL DEFAULT '[]',
+      target_json         TEXT NOT NULL DEFAULT '{}',
+      material_json       TEXT NOT NULL DEFAULT '{}',
+      traceability_json   TEXT NOT NULL DEFAULT '{}',
+      approval_id         TEXT,
+      metadata_json       TEXT NOT NULL DEFAULT '{}',
+      created_at          TEXT NOT NULL,
+      updated_at          TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maker_projects_type
+      ON maker_projects(type, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_maker_projects_status
+      ON maker_projects(status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS maker_materials (
+      id                 TEXT PRIMARY KEY,
+      name               TEXT NOT NULL,
+      category           TEXT NOT NULL DEFAULT 'unknown',
+      properties_json    TEXT NOT NULL DEFAULT '{}',
+      safety_notes_json  TEXT NOT NULL DEFAULT '[]',
+      source             TEXT NOT NULL DEFAULT 'manual',
+      created_at         TEXT NOT NULL,
+      updated_at         TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maker_materials_category
+      ON maker_materials(category, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS maker_cad_artifacts (
+      id             TEXT PRIMARY KEY,
+      project_id     TEXT NOT NULL,
+      artifact_type  TEXT NOT NULL,
+      name           TEXT NOT NULL,
+      path           TEXT,
+      metadata_json  TEXT NOT NULL DEFAULT '{}',
+      safety_tier    TEXT NOT NULL DEFAULT 'read_only',
+      status         TEXT NOT NULL DEFAULT 'proposal',
+      created_at     TEXT NOT NULL,
+      updated_at     TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES maker_projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maker_cad_artifacts_project
+      ON maker_cad_artifacts(project_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS recovery_backup_manifests (
+      id                   TEXT PRIMARY KEY,
+      status               TEXT NOT NULL,
+      dry_run              INTEGER NOT NULL DEFAULT 1,
+      scope_json           TEXT NOT NULL DEFAULT '[]',
+      destination_json     TEXT NOT NULL DEFAULT '{}',
+      retention_json       TEXT NOT NULL DEFAULT '{}',
+      verification_json    TEXT NOT NULL DEFAULT '{}',
+      rollback_notes_json  TEXT NOT NULL DEFAULT '[]',
+      provider_status_json TEXT NOT NULL DEFAULT '[]',
+      manifest_hash        TEXT NOT NULL,
+      job_id               TEXT,
+      created_at           TEXT NOT NULL,
+      updated_at           TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recovery_backup_manifests_created
+      ON recovery_backup_manifests(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS recovery_restore_plans (
+      id                    TEXT PRIMARY KEY,
+      manifest_id           TEXT NOT NULL,
+      status                TEXT NOT NULL,
+      dry_run               INTEGER NOT NULL DEFAULT 1,
+      approval_id           TEXT,
+      dry_run_result_json   TEXT NOT NULL DEFAULT '{}',
+      rollback_point_json   TEXT NOT NULL DEFAULT '{}',
+      executed              INTEGER NOT NULL DEFAULT 0,
+      job_id                TEXT,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recovery_restore_plans_manifest
+      ON recovery_restore_plans(manifest_id, created_at DESC);
   `);
+  for (const column of [
+    ["local_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["cloud_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["local_cost_usd", "REAL NOT NULL DEFAULT 0"],
+    ["cloud_cost_usd", "REAL NOT NULL DEFAULT 0"],
+  ] as const) {
+    const existing = sqlite.prepare("PRAGMA table_info(usage_metrics)").all() as Array<{ name: string }>;
+    if (!existing.some((entry) => entry.name === column[0])) {
+      sqlite.exec(`ALTER TABLE usage_metrics ADD COLUMN ${column[0]} ${column[1]}`);
+    }
+  }
+  for (const column of [
+    ["checkpoint_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["retry_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["result_json", "TEXT"],
+    ["error", "TEXT"],
+    ["started_at", "TEXT"],
+    ["finished_at", "TEXT"],
+  ] as const) {
+    const existing = sqlite.prepare("PRAGMA table_info(durable_jobs)").all() as Array<{ name: string }>;
+    if (!existing.some((entry) => entry.name === column[0])) {
+      sqlite.exec(`ALTER TABLE durable_jobs ADD COLUMN ${column[0]} ${column[1]}`);
+    }
+  }
+  for (const [table, column, ddl] of [
+    ["rag_collections", "updated_at", "TEXT"],
+    ["rag_collections", "vector_provider", "TEXT NOT NULL DEFAULT 'hnswlib'"],
+    ["rag_collections", "provider_status_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["rag_chunks", "source_id", "TEXT"],
+    ["rag_chunks", "embedding_json", "TEXT"],
+    ["rag_chunks", "citation_metadata_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["rag_chunks", "provider_status_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["rag_chunks", "stale", "INTEGER NOT NULL DEFAULT 0"],
+    ["rag_chunks", "updated_at", "TEXT"],
+    ["rag_chunks", "deleted_at", "TEXT"],
+  ] as const) {
+    const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!existing.some((entry) => entry.name === column)) {
+      sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
+  }
+  sqlite.exec("CREATE INDEX IF NOT EXISTS idx_rag_chunks_source ON rag_chunks(source_id)");
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -460,4 +891,6 @@ export async function initDatabase(): Promise<void> {
   await migrateModelRoles();
   await migrateProjects();
   await migrateActivity();
+  const { seedFoundationDefaults } = await import("../lib/platform-foundation.js");
+  seedFoundationDefaults();
 }

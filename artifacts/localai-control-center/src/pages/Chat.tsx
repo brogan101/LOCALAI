@@ -630,6 +630,11 @@ function AgentActionCard({
       } else if (action.type === "propose_command") {
         const cmd = editMode ? editedValue : (action.command ?? "");
         const result = await api.system.execRun(cmd, action.cwd, 60000);
+        if (!("stdout" in result)) {
+          setTerminalOutput(`Approval required: ${result.approval.title}\nApproval ID: ${result.approval.id}\nOpen Operations → Approvals to approve or deny. The command has not executed.`);
+          setExitCode(null);
+          return;
+        }
         setTerminalOutput((result.stdout || "") + (result.stderr ? `\nSTDERR:\n${result.stderr}` : ""));
         setExitCode(result.exitCode);
         onApprove({ ...action, command: cmd });
@@ -2430,7 +2435,13 @@ export default function ChatPage() {
       const content = editedValue ?? action.newContent ?? "";
       const filePath = action.filePath!;
       try {
-        await api.system.sovereignEdit(filePath, content);
+        const result = await api.system.sovereignEdit(filePath, content);
+        if ("approvalRequired" in result && result.approvalRequired) {
+          setToast({
+            message: `Approval queued for ${filePath.split("/").pop()} (${result.approval.id.slice(0, 8)})`,
+          });
+          return;
+        }
         setPendingActions(prev => prev.filter(a => a.id !== action.id));
         const canRestart = settings?.allowAgentSelfHeal !== false;
         setToast({

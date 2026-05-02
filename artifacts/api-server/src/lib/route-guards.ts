@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { loadSettings, type AppSettings } from "./secure-config.js";
 import { thoughtLog } from "./thought-log.js";
+import { evaluatePermission, recordPermissionDecision, type PermissionScope } from "./platform-foundation.js";
 
 type PermissionName =
   | "allowAgentExec"
@@ -38,15 +39,42 @@ async function loadPermissionSettings(): Promise<Pick<AppSettings, PermissionNam
   return { ...settings, ...testOverrides };
 }
 
+function scopedPermissionForLegacy(permission: PermissionName): PermissionScope {
+  switch (permission) {
+    case "allowAgentExec": return "command.execute";
+    case "allowAgentEdits": return "file.write";
+    case "allowAgentSelfHeal": return "command.execute";
+    case "allowAgentRefactor": return "file.write";
+  }
+}
+
 export async function requirePermission(
   res: Response,
   permission: PermissionName,
   action: string,
 ): Promise<boolean> {
   const settings = await loadPermissionSettings();
-  if (settings[permission]) return true;
+  if (settings[permission]) {
+    const scopedDecision = evaluatePermission(scopedPermissionForLegacy(permission), action);
+    recordPermissionDecision(scopedDecision);
+    if (scopedDecision.allowed) return true;
+    res.status(403).json({
+      success: false,
+      blocked: true,
+      permission,
+      scope: scopedDecision.scope,
+      message: scopedDecision.reason,
+    });
+    return false;
+  }
 
   const message = PERMISSION_MESSAGES[permission];
+  recordPermissionDecision({
+    allowed: false,
+    scope: scopedPermissionForLegacy(permission),
+    action,
+    reason: message,
+  });
   thoughtLog.publish({
     level: "warning",
     category: "security",

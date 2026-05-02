@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import {
   Folder, FolderOpen, Pin, Trash2, Plus, RefreshCw, ExternalLink,
@@ -16,6 +16,8 @@ import api, {
   type RefactorJob,
   type RefactorStep,
   type FilebrowserEntry,
+  type RagChunk,
+  type RagSource,
 } from "../api.js";
 import { PermissionNotice } from "../components/PermissionNotice.js";
 import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
@@ -1036,11 +1038,289 @@ function FileBrowserTab() {
   );
 }
 
+function statusColor(status?: string) {
+  if (status === "available" || status === "indexed" || status === "reindexed") return "var(--color-success)";
+  if (status === "not_configured" || status === "not_installed" || status === "skipped_unchanged") return "var(--color-warn)";
+  if (status === "deleted" || status === "failed" || status === "unavailable") return "var(--color-error)";
+  return "var(--color-muted)";
+}
+
+function RagTab() {
+  const qc = useQueryClient();
+  const [collectionName, setCollectionName] = useState("");
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [sourceName, setSourceName] = useState("");
+  const [sourcePath, setSourcePath] = useState("");
+  const [inlineContent, setInlineContent] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+
+  const statusQ = useQuery({
+    queryKey: ["rag-status"],
+    queryFn: () => api.ragApi.status(),
+    staleTime: 30_000,
+  });
+  const collectionsQ = useQuery({
+    queryKey: ["rag-collections"],
+    queryFn: () => api.ragApi.listCollections(),
+    staleTime: 10_000,
+  });
+  const sourcesQ = useQuery({
+    queryKey: ["rag-sources", selectedCollectionId],
+    queryFn: () => api.ragApi.listSources(selectedCollectionId),
+    enabled: !!selectedCollectionId,
+    staleTime: 5_000,
+  });
+  const chunksQ = useQuery({
+    queryKey: ["rag-chunks", selectedCollectionId, selectedSourceId],
+    queryFn: () => api.ragApi.listChunks(selectedCollectionId, selectedSourceId || undefined, 25),
+    enabled: !!selectedCollectionId,
+    staleTime: 5_000,
+  });
+
+  const collections = collectionsQ.data?.collections ?? [];
+  const selectedCollection = collections.find((collection) => collection.id === selectedCollectionId) ?? collections[0];
+  const activeCollectionId = selectedCollectionId || selectedCollection?.id || "";
+  const sources: RagSource[] = sourcesQ.data?.sources ?? [];
+  const chunks: RagChunk[] = chunksQ.data?.chunks ?? [];
+
+  useEffect(() => {
+    if (!selectedCollectionId && selectedCollection?.id) {
+      setSelectedCollectionId(selectedCollection.id);
+    }
+  }, [selectedCollectionId, selectedCollection?.id]);
+
+  const createMut = useMutation({
+    mutationFn: () => api.ragApi.createCollection(collectionName.trim()),
+    onSuccess: (data) => {
+      setCollectionName("");
+      setSelectedCollectionId(data.collection.id);
+      setMessage(`Created collection ${data.collection.name}`);
+      void qc.invalidateQueries({ queryKey: ["rag-collections"] });
+    },
+    onError: (error) => setMessage(apiErrorMessage(error, "Collection creation failed")),
+  });
+
+  const reindexMut = useMutation({
+    mutationFn: () => api.ragApi.reindex(activeCollectionId, {
+      source: sourceName.trim() || sourcePath.trim() || "inline",
+      filePath: sourcePath.trim() || undefined,
+      content: sourcePath.trim() ? undefined : inlineContent,
+    }),
+    onSuccess: (data) => {
+      setSelectedSourceId(data.source.id);
+      setMessage(data.skipped
+        ? "Source unchanged; skipped by hash."
+        : `Indexed ${data.chunksAdded} chunk(s); removed ${data.chunksRemoved} stale chunk(s).`);
+      void qc.invalidateQueries({ queryKey: ["rag-collections"] });
+      void qc.invalidateQueries({ queryKey: ["rag-sources", activeCollectionId] });
+      void qc.invalidateQueries({ queryKey: ["rag-chunks", activeCollectionId] });
+    },
+    onError: (error) => setMessage(apiErrorMessage(error, "Re-index failed")),
+  });
+
+  const deleteSourceMut = useMutation({
+    mutationFn: (sourceId: string) => api.ragApi.deleteSource(activeCollectionId, sourceId),
+    onSuccess: (data) => {
+      setMessage(`Marked source stale; removed ${data.chunksRemoved} chunk(s).`);
+      setSelectedSourceId("");
+      void qc.invalidateQueries({ queryKey: ["rag-collections"] });
+      void qc.invalidateQueries({ queryKey: ["rag-sources", activeCollectionId] });
+      void qc.invalidateQueries({ queryKey: ["rag-chunks", activeCollectionId] });
+    },
+    onError: (error) => setMessage(apiErrorMessage(error, "Source delete failed")),
+  });
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Card>
+          <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--color-border)" }}>
+            <Database size={14} style={{ color: "var(--color-accent)" }} />
+            <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>RAG Providers</span>
+          </div>
+          <div className="p-4 space-y-3">
+            {statusQ.isLoading && <div className="text-xs" style={{ color: "var(--color-muted)" }}>Loading provider status…</div>}
+            {statusQ.data && (
+              <>
+                {[...statusQ.data.ingestion, ...statusQ.data.vectorStores].map((provider) => (
+                  <div key={`${provider.kind}-${provider.id}`} className="flex items-start gap-3 text-xs">
+                    <span className="mt-1 h-2 w-2 rounded-full shrink-0" style={{ background: statusColor(provider.status) }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium" style={{ color: "var(--color-foreground)" }}>{provider.displayName}</span>
+                        <span style={{ color: statusColor(provider.status) }}>{provider.status}</span>
+                        {provider.default && <span style={{ color: "var(--color-accent)" }}>default</span>}
+                      </div>
+                      {provider.reason && <div style={{ color: "var(--color-muted)" }}>{provider.reason}</div>}
+                    </div>
+                  </div>
+                ))}
+                <div className="text-xs font-mono break-all pt-1" style={{ color: "var(--color-muted)" }}>
+                  {statusQ.data.sourceOfTruth}
+                </div>
+              </>
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--color-border)" }}>
+            <Plus size={14} style={{ color: "var(--color-accent)" }} />
+            <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>Collection</span>
+          </div>
+          <div className="p-4 space-y-3">
+            <div className="flex gap-2">
+              <input
+                value={collectionName}
+                onChange={(event) => setCollectionName(event.target.value)}
+                placeholder="Collection name"
+                className="flex-1 px-3 py-2 rounded-lg text-xs outline-none"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+              />
+              <button
+                disabled={!collectionName.trim() || createMut.isPending}
+                onClick={() => createMut.mutate()}
+                className="px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-40"
+                style={{ background: "var(--color-accent)", color: "#fff" }}>
+                Create
+              </button>
+            </div>
+            <select
+              value={activeCollectionId}
+              onChange={(event) => { setSelectedCollectionId(event.target.value); setSelectedSourceId(""); }}
+              className="w-full px-3 py-2 rounded-lg text-xs outline-none"
+              style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}>
+              {collections.map((collection) => (
+                <option key={collection.id} value={collection.id}>
+                  {collection.name} · {collection.sourceCount} source(s) · {collection.chunkCount} chunk(s)
+                </option>
+              ))}
+            </select>
+            {collectionsQ.isLoading && <div className="text-xs" style={{ color: "var(--color-muted)" }}>Loading collections…</div>}
+            {!collectionsQ.isLoading && collections.length === 0 && (
+              <div className="text-xs" style={{ color: "var(--color-muted)" }}>No RAG collections yet.</div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <Card>
+        <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--color-border)" }}>
+          <RefreshCw size={14} style={{ color: "var(--color-accent)" }} />
+          <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>Re-index Source</span>
+        </div>
+        <div className="p-4 grid md:grid-cols-3 gap-3">
+          <input
+            value={sourceName}
+            onChange={(event) => setSourceName(event.target.value)}
+            placeholder="Source name"
+            className="px-3 py-2 rounded-lg text-xs outline-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          <input
+            value={sourcePath}
+            onChange={(event) => setSourcePath(event.target.value)}
+            placeholder="Local file path"
+            className="px-3 py-2 rounded-lg text-xs outline-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          <button
+            disabled={!activeCollectionId || reindexMut.isPending || (!sourcePath.trim() && !inlineContent.trim())}
+            onClick={() => reindexMut.mutate()}
+            className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-40"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>
+            {reindexMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            Re-index
+          </button>
+          <textarea
+            value={inlineContent}
+            onChange={(event) => setInlineContent(event.target.value)}
+            placeholder="Inline document text when no file path is provided"
+            rows={3}
+            className="md:col-span-3 px-3 py-2 rounded-lg text-xs outline-none resize-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}
+          />
+          {message && <div className="md:col-span-3 text-xs" style={{ color: "var(--color-muted)" }}>{message}</div>}
+        </div>
+      </Card>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Card>
+          <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--color-border)" }}>
+            <File size={14} style={{ color: "var(--color-accent)" }} />
+            <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>Sources</span>
+          </div>
+          <div className="divide-y" style={{ borderColor: "var(--color-border)" }}>
+            {sourcesQ.isLoading && <div className="p-4 text-xs" style={{ color: "var(--color-muted)" }}>Loading sources…</div>}
+            {sources.map((source) => (
+              <button
+                key={source.id}
+                onClick={() => setSelectedSourceId(source.id)}
+                className="w-full text-left px-4 py-3"
+                style={{ background: selectedSourceId === source.id ? "var(--color-elevated)" : "transparent" }}>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-mono truncate flex-1" style={{ color: "var(--color-foreground)" }}>{source.source}</span>
+                  <span style={{ color: statusColor(source.status) }}>{source.status}</span>
+                  {!source.deletedAt && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => { event.stopPropagation(); deleteSourceMut.mutate(source.id); }}
+                      className="p-1 rounded"
+                      style={{ color: "var(--color-muted)", background: "var(--color-surface)" }}>
+                      <Trash2 size={11} />
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 text-xs" style={{ color: "var(--color-muted)" }}>
+                  {source.parserUsed} · {source.chunkCount} chunk(s) · page {String(source.citation.page ?? "unavailable")} · section {String(source.citation.section ?? "unavailable")}
+                </div>
+              </button>
+            ))}
+            {!sourcesQ.isLoading && sources.length === 0 && (
+              <div className="p-4 text-xs" style={{ color: "var(--color-muted)" }}>No sources indexed for this collection.</div>
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--color-border)" }}>
+            <Search size={14} style={{ color: "var(--color-accent)" }} />
+            <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>Chunk Inspector</span>
+          </div>
+          <div className="max-h-[420px] overflow-auto">
+            {chunksQ.isLoading && <div className="p-4 text-xs" style={{ color: "var(--color-muted)" }}>Loading chunks…</div>}
+            {chunks.map((chunk) => (
+              <div key={chunk.id} className="px-4 py-3 text-xs" style={{ borderBottom: "1px solid var(--color-border)" }}>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono" style={{ color: "var(--color-muted)" }}>#{chunk.chunkIndex}</span>
+                  <span className="truncate" style={{ color: "var(--color-foreground)" }}>{chunk.source}</span>
+                </div>
+                <div className="mt-1" style={{ color: "var(--color-muted)" }}>
+                  page {String(chunk.citation.page ?? "unavailable")} · section {String(chunk.citation.section ?? "unavailable")} · lines {String(chunk.citation.lineStart ?? "unavailable")}-{String(chunk.citation.lineEnd ?? "unavailable")}
+                </div>
+                <pre className="mt-2 whitespace-pre-wrap rounded-lg p-2 max-h-32 overflow-auto"
+                  style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", fontFamily: "monospace" }}>
+                  {chunk.text}
+                </pre>
+              </div>
+            ))}
+            {!chunksQ.isLoading && chunks.length === 0 && (
+              <div className="p-4 text-xs" style={{ color: "var(--color-muted)" }}>No active chunks to inspect.</div>
+            )}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function WorkspacePage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"projects" | "intelligence" | "files">("projects");
+  const [tab, setTab] = useState<"projects" | "intelligence" | "files" | "rag">("projects");
   const [showCreate, setShowCreate] = useState(false);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<Record<string, string>>({});
@@ -1247,6 +1527,7 @@ npm run dev
           { id: "projects", label: "Projects", icon: Folder },
           { id: "intelligence", label: "Intelligence", icon: Brain },
           { id: "files", label: "Files", icon: FileCode },
+          { id: "rag", label: "RAG", icon: Database },
         ] as const).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -1384,6 +1665,11 @@ npm run dev
       {/* ── Files tab ── */}
       {tab === "files" && (
         <FileBrowserTab />
+      )}
+
+      {/* ── RAG tab ── */}
+      {tab === "rag" && (
+        <RagTab />
       )}
     </div>
   );

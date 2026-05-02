@@ -2,9 +2,16 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import {
   Save, RefreshCw, CheckCircle, Trash2, Plus, BarChart2,
-  Code2, AlertCircle, DollarSign, Info,
+  Code2, AlertCircle, DollarSign, Info, ShieldCheck, Cloud, KeyRound,
 } from "lucide-react";
-import api, { apiErrorMessage, type AppSettings, type ContinueRule, type LifetimeUsage, type RagCollection } from "../api.js";
+import api, {
+  apiErrorMessage,
+  type AppSettings,
+  type ContinueRule,
+  type LifetimeUsage,
+  type ProviderSummary,
+  type RagCollection,
+} from "../api.js";
 import { PermissionNotice } from "../components/PermissionNotice.js";
 import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
@@ -410,6 +417,8 @@ export default function SettingsPage() {
         </SettingRow>
       </Card>
 
+      <ProviderPolicySection />
+
       {/* ── Voice ──────────────────────────────────────────────────────────── */}
       <Card>
         <SectionHeader title="Voice" />
@@ -691,6 +700,211 @@ function AboutSection() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Local-first provider policy ──────────────────────────────────────────────
+
+function ProviderPolicySection() {
+  const qc = useQueryClient();
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const policyQ = useQuery({
+    queryKey: ["provider-policy"],
+    queryFn: () => api.providerPolicy.get(),
+    staleTime: 30_000,
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<ProviderSummary> & { apiKey?: string; makeDefault?: boolean } }) =>
+      api.providerPolicy.updateProvider(id, patch),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["provider-policy"] }),
+  });
+
+  const testMut = useMutation({
+    mutationFn: (id: string) => api.providerPolicy.testProvider(id),
+  });
+
+  const data = policyQ.data;
+  const localProviders = data?.providers.filter(provider => provider.kind === "local") ?? [];
+  const cloudProviders = data?.providers.filter(provider => provider.kind === "cloud") ?? [];
+
+  function updateProvider(id: string, patch: Partial<ProviderSummary> & { apiKey?: string; makeDefault?: boolean }) {
+    updateMut.mutate({ id, patch });
+  }
+
+  function statusColor(status: ProviderSummary["status"]) {
+    if (status === "available") return "var(--color-success)";
+    if (status === "disabled") return "var(--color-muted)";
+    return "var(--color-warn)";
+  }
+
+  function ProviderRow({ provider }: { provider: ProviderSummary }) {
+    const keyDraft = apiKeyDrafts[provider.id] ?? "";
+    const isCloud = provider.kind === "cloud";
+    return (
+      <div className="p-3 space-y-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              {isCloud ? <Cloud size={14} style={{ color: "var(--color-warn)" }} /> : <ShieldCheck size={14} style={{ color: "var(--color-success)" }} />}
+              <div className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>{provider.displayName}</div>
+              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase"
+                style={{ background: "var(--color-elevated)", color: statusColor(provider.status), border: "1px solid var(--color-border)" }}>
+                {provider.status.replace("_", " ")}
+              </span>
+              {!provider.dataLeavesMachine && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded uppercase"
+                  style={{ background: "color-mix(in srgb, var(--color-success) 10%, transparent)", color: "var(--color-success)" }}>
+                  local
+                </span>
+              )}
+            </div>
+            <div className="text-xs mt-1 max-w-2xl" style={{ color: "var(--color-muted)" }}>{provider.notes}</div>
+          </div>
+          <Toggle
+            value={provider.enabled}
+            onChange={(enabled) => updateProvider(provider.id, { enabled })}
+          />
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-2">
+          <label className="space-y-1">
+            <div className="text-xs" style={{ color: "var(--color-muted)" }}>Base URL</div>
+            <TextInput
+              mono
+              value={provider.baseUrl}
+              onChange={(baseUrl) => updateProvider(provider.id, { baseUrl })}
+              placeholder={provider.defaultBaseUrl || "http://127.0.0.1:8000/v1"}
+            />
+          </label>
+          <label className="space-y-1">
+            <div className="text-xs" style={{ color: "var(--color-muted)" }}>Default model</div>
+            <TextInput
+              value={provider.model}
+              onChange={(model) => updateProvider(provider.id, { model })}
+              placeholder={isCloud ? "optional cloud model" : "optional local model"}
+            />
+          </label>
+        </div>
+
+        {isCloud && (
+          <div className="grid gap-2 md:grid-cols-2">
+            <label className="space-y-1">
+              <div className="text-xs flex items-center gap-1" style={{ color: "var(--color-muted)" }}>
+                <KeyRound size={11} /> API key
+              </div>
+              <input
+                type="password"
+                value={keyDraft}
+                onChange={(event) => setApiKeyDrafts(prev => ({ ...prev, [provider.id]: event.target.value }))}
+                placeholder={provider.apiKeySet ? provider.apiKeyPreview : "not configured"}
+                className="px-3 py-1.5 rounded-lg text-sm w-52 font-mono"
+                style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+              />
+            </label>
+            <div className="flex items-end gap-2">
+              <button
+                disabled={!keyDraft || updateMut.isPending}
+                onClick={() => {
+                  updateProvider(provider.id, { apiKey: keyDraft, enabled: true });
+                  setApiKeyDrafts(prev => ({ ...prev, [provider.id]: "" }));
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
+                style={{ background: "var(--color-elevated)", color: "var(--color-foreground)", border: "1px solid var(--color-border)", opacity: !keyDraft ? 0.55 : 1 }}>
+                <Save size={11} /> Save key
+              </button>
+              <button
+                disabled={!provider.apiKeySet || updateMut.isPending}
+                onClick={() => updateProvider(provider.id, { apiKey: "", enabled: false, firstUseApproved: false, allowPrivateFileData: false })}
+                className="px-3 py-1.5 rounded-lg text-xs"
+                style={{ background: "color-mix(in srgb, var(--color-error) 10%, transparent)", color: "var(--color-error)", border: "1px solid color-mix(in srgb, var(--color-error) 25%, transparent)", opacity: !provider.apiKeySet ? 0.55 : 1 }}>
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
+
+        {isCloud && (
+          <div className="grid gap-2 md:grid-cols-2">
+            <SettingRow label="First-use approved" description="Required before any cloud provider can be selected for a task">
+              <Toggle value={provider.firstUseApproved} onChange={(firstUseApproved) => updateProvider(provider.id, { firstUseApproved })} />
+            </SettingRow>
+            <SettingRow label="Allow private file/RAG data" description="Off by default; secrets and credentials remain blocked">
+              <Toggle value={provider.allowPrivateFileData} onChange={(allowPrivateFileData) => updateProvider(provider.id, { allowPrivateFileData })} />
+            </SettingRow>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs" style={{ color: "var(--color-muted)" }}>
+            {provider.dataLeavesMachine ? "Data leaves this machine when explicitly approved." : "Data stays on local or loopback provider paths."}
+          </div>
+          <div className="flex gap-2">
+            {!isCloud && (
+              <button
+                onClick={() => updateProvider(provider.id, { makeDefault: true, enabled: true })}
+                className="px-3 py-1.5 rounded-lg text-xs"
+                style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+                Make default
+              </button>
+            )}
+            <button
+              disabled={testMut.isPending}
+              onClick={() => testMut.mutate(provider.id)}
+              className="px-3 py-1.5 rounded-lg text-xs"
+              style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+              Test policy
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Card>
+      <SectionHeader title="Local-First Provider Policy" />
+      <div className="p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded"
+            style={{ background: "color-mix(in srgb, var(--color-success) 10%, transparent)", color: "var(--color-success)", border: "1px solid color-mix(in srgb, var(--color-success) 25%, transparent)" }}>
+            <ShieldCheck size={12} /> Local-first
+          </span>
+          <span className="text-xs" style={{ color: "var(--color-muted)" }}>
+            Default provider: {data?.defaultProviderId ?? "ollama"} · Cloud providers are optional and blocked unless configured and approved.
+          </span>
+        </div>
+
+        {policyQ.isLoading && <div className="text-xs" style={{ color: "var(--color-muted)" }}>Loading provider policy…</div>}
+        {policyQ.isError && <div className="text-xs" style={{ color: "var(--color-error)" }}>Provider policy unavailable</div>}
+
+        {localProviders.length > 0 && (
+          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+            <SectionHeader title="Local Providers" />
+            {localProviders.map(provider => <ProviderRow key={provider.id} provider={provider} />)}
+          </div>
+        )}
+
+        {cloudProviders.length > 0 && (
+          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+            <SectionHeader title="Optional API Providers" />
+            {cloudProviders.map(provider => <ProviderRow key={provider.id} provider={provider} />)}
+          </div>
+        )}
+
+        {testMut.data && (
+          <div className="text-xs p-2.5 rounded-lg"
+            style={{ background: "var(--color-elevated)", color: "var(--color-muted)", border: "1px solid var(--color-border)" }}>
+            {testMut.data.message}
+          </div>
+        )}
+        {(updateMut.error || testMut.error) && (
+          <div className="text-xs" style={{ color: "var(--color-error)" }}>
+            {apiErrorMessage(updateMut.error || testMut.error, "Provider policy update failed")}
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 

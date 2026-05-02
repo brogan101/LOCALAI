@@ -22,6 +22,9 @@ import { loadSettings } from "./lib/secure-config.js";
 import { WARMUP_TOP_N } from "./config/models.config.js";
 import { localBrowserRequestGuard } from "./lib/route-guards.js";
 import openaiCompatRoutes from "./routes/openai.js";
+import { clearRuntimeDiagnostic, recordRuntimeDiagnostic } from "./lib/runtime-diagnostics.js";
+import { modelWarmupsAllowed, seedRuntimePolicyDefaults } from "./lib/runtime-mode.js";
+import { hydrateDurableJobsForRestart } from "./lib/platform-foundation.js";
 
 const execAsync = promisify(exec);
 
@@ -47,13 +50,36 @@ async function maybeSpawnSttSidecar(): Promise<void> {
       stdio:    "ignore",
       env:      { ...process.env },
     });
+    sidecar.once("error", (error) => {
+      recordRuntimeDiagnostic({
+        id: "sidecar.stt",
+        component: "stt-sidecar",
+        status: "degraded",
+        severity: "warning",
+        message: `STT sidecar failed after launch: ${error.message}`,
+      });
+      thoughtLog.publish({
+        level:    "warning",
+        category: "kernel",
+        title:    "STT: Sidecar Failed",
+        message:  error.message,
+      });
+    });
     sidecar.unref();
+    clearRuntimeDiagnostic("sidecar.stt");
     thoughtLog.publish({
       category: "kernel",
       title:    "STT: Sidecar Spawned",
       message:  `faster-whisper STT server started (pid ${sidecar.pid ?? "?"}) using ${version}`,
     });
   } catch (err) {
+    recordRuntimeDiagnostic({
+      id: "sidecar.stt",
+      component: "stt-sidecar",
+      status: "degraded",
+      severity: "warning",
+      message:  err instanceof Error ? err.message : String(err),
+    });
     thoughtLog.publish({
       level:    "warning",
       category: "kernel",
@@ -65,20 +91,82 @@ async function maybeSpawnSttSidecar(): Promise<void> {
 
 // ── Windows tray sidecar ──────────────────────────────────────────────────────
 
-function spawnTraySidecar(): void {
+async function resolvePowerShellForSidecar(): Promise<string | null> {
+  for (const candidate of ["pwsh.exe", "powershell.exe"]) {
+    try {
+      await execAsync(`where ${candidate}`, { timeout: 2500, windowsHide: true });
+      return candidate;
+    } catch {
+      // Try the next shell.
+    }
+  }
+  return null;
+}
+
+async function spawnTraySidecar(): Promise<void> {
   if (os.platform() !== "win32") return;
-  const script = path.resolve(__dirname, "../../../scripts/windows/LocalAI.Tray.ps1");
-  const proc = spawn(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script],
-    { detached: true, stdio: "ignore" },
-  );
-  proc.unref();
-  thoughtLog.publish({
-    category: "kernel",
-    title:    "Tray: Sidecar Spawned",
-    message:  `Windows tray icon launched (pid ${proc.pid ?? "?"})`,
-  });
+  try {
+    const shell = await resolvePowerShellForSidecar();
+    if (!shell) throw new Error("No PowerShell host found for optional tray sidecar.");
+
+    const script = path.resolve(__dirname, "../../../scripts/windows/LocalAI.Tray.ps1");
+    const proc = spawn(
+      shell,
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script],
+      { detached: true, stdio: "ignore", windowsHide: true },
+    );
+    proc.once("error", (error) => {
+      recordRuntimeDiagnostic({
+        id: "sidecar.tray",
+        component: "windows-tray-sidecar",
+        status: "degraded",
+        severity: "warning",
+        message: `Optional Windows tray sidecar failed to launch: ${error.message}`,
+        details: { shell },
+      });
+      thoughtLog.publish({
+        level:    "warning",
+        category: "kernel",
+        title:    "Tray: Sidecar Unavailable",
+        message:  error.message,
+        metadata: { shell },
+      });
+    });
+    proc.once("exit", (code, signal) => {
+      if (code && code !== 0) {
+        recordRuntimeDiagnostic({
+          id: "sidecar.tray",
+          component: "windows-tray-sidecar",
+          status: "degraded",
+          severity: "warning",
+          message: `Optional Windows tray sidecar exited early with code ${code}.`,
+          details: { shell, signal },
+        });
+      }
+    });
+    proc.unref();
+    clearRuntimeDiagnostic("sidecar.tray");
+    thoughtLog.publish({
+      category: "kernel",
+      title:    "Tray: Sidecar Spawned",
+      message:  `Windows tray icon launched (pid ${proc.pid ?? "?"}) using ${shell}`,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordRuntimeDiagnostic({
+      id: "sidecar.tray",
+      component: "windows-tray-sidecar",
+      status: "degraded",
+      severity: "warning",
+      message: `Optional Windows tray sidecar unavailable: ${message}`,
+    });
+    thoughtLog.publish({
+      level:    "warning",
+      category: "kernel",
+      title:    "Tray: Sidecar Unavailable",
+      message,
+    });
+  }
 }
 
 const app = express();
@@ -180,10 +268,13 @@ void initDatabase()
       thoughtLog.hydrate(),
       taskQueue.hydrate(),
     ]);
+    const durableHydration = hydrateDurableJobsForRestart();
+    seedRuntimePolicyDefaults();
     thoughtLog.publish({
       category: "kernel",
       title:    "DB: Hydration Complete",
-      message:  "thought_log and async_jobs hydrated from localai.db",
+      message:  "thought_log, async_jobs, and durable_jobs hydrated from localai.db",
+      metadata: durableHydration,
     });
   })
   .catch((err) => {
@@ -194,7 +285,7 @@ void stateOrchestrator.hydrate();
 
 trackWindowForIdleMinimize("api-server", 30_000);
 trackWindowForIdleMinimize("localai-control-center", 30_000);
-spawnTraySidecar();
+void spawnTraySidecar();
 void maybeSpawnSttSidecar();
 
 // Start foreground watcher if adaptive profiles enabled (default on)
@@ -214,6 +305,14 @@ startDistributedNodeHeartbeat();
 void (async () => {
   try {
     await new Promise(r => setTimeout(r, 8000)); // let Ollama finish starting
+    if (!modelWarmupsAllowed()) {
+      thoughtLog.publish({
+        category: "kernel",
+        title:    "Warm-up: Skipped",
+        message:  "Runtime mode disables background model warm-ups.",
+      });
+      return;
+    }
     const { sqlite } = await import("./db/database.js");
     const topModels = sqlite.prepare(`
       SELECT m.model_name, SUM(1) as cnt

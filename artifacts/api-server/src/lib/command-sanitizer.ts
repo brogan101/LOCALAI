@@ -42,6 +42,19 @@ const BLOCK_LIST: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bdropdb\b/i,                                       reason: "Database drop blocked" },
   { pattern: /\bdrop\s+database\b/i,                              reason: "DROP DATABASE blocked" },
   { pattern: /\btruncate\s+table\b/i,                             reason: "TRUNCATE TABLE blocked" },
+  // Phase 12B IT support hardening: destructive admin actions must be proposed,
+  // reviewed, and approval-gated instead of flowing through generic exec.
+  { pattern: /\bRemove-ADUser\b/i,                                 reason: "Active Directory user removal blocked" },
+  { pattern: /\bDisable-ADAccount\b/i,                              reason: "Active Directory account disable blocked" },
+  { pattern: /\bRemove-GPO\b/i,                                     reason: "Group Policy object removal blocked" },
+  { pattern: /\bSet-GPRegistryValue\b/i,                            reason: "Group Policy registry modification blocked" },
+  { pattern: /\bRemove-Mailbox\b/i,                                 reason: "Mailbox removal blocked" },
+  { pattern: /\bRemove-MgUser\b/i,                                  reason: "Microsoft 365 user removal blocked" },
+  { pattern: /\bSet-NetFirewallProfile\b/i,                         reason: "Firewall profile modification blocked" },
+  { pattern: /\bNew-NetFirewallRule\b/i,                            reason: "Firewall rule creation blocked" },
+  { pattern: /\bRemove-NetFirewallRule\b/i,                         reason: "Firewall rule removal blocked" },
+  { pattern: /\bmsiexec(?:\.exe)?\b.*\s\/x\b/i,                    reason: "MSI uninstall command blocked" },
+  { pattern: /\bUninstall-(?:Package|Module|WindowsFeature)\b/i,    reason: "Package/module/feature uninstall blocked" },
 ];
 
 /**

@@ -20,9 +20,12 @@ const server = app.listen(port, host, () => {
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
-  const message = err.code === "EADDRINUSE"
-    ? `Port ${port} on ${host} is already in use. Stop the existing LocalAI API server or set a different PORT/HOST.`
-    : `Error listening on ${host}:${port}: ${err.message}`;
+  let message = `Error listening on ${host}:${port}: ${err.message}`;
+  if (err.code === "EADDRINUSE") {
+    message = `Port ${port} on ${host} is already in use. Stop the existing LocalAI API server or set a different PORT/HOST.`;
+  } else if (err.message.includes("listen UNKNOWN")) {
+    message = `Windows socket layer rejected LocalAI API bind on ${host}:${port} (${err.message}). HOST defaults to 127.0.0.1; check Winsock/firewall/security software or try an alternate PORT/HOST.`;
+  }
   logger.error({ err, host, port }, message);
   console.error(message);
   process.exitCode = 1;

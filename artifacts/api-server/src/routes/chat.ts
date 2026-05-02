@@ -1,6 +1,6 @@
 import { Router } from "express";
 import path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 import { isDangerousCommand } from "../lib/command-sanitizer.js";
 import { db } from "../db/database.js";
@@ -10,10 +10,14 @@ import {
   getUniversalGatewayTags,
   streamGatewayChatToSse,
   sendGatewayChat,
-  queueUniversalModelPull,
-  unloadOllamaModel,
   getRunningGatewayModels,
 } from "../lib/model-orchestrator.js";
+import { proposeModelLifecycleAction } from "../lib/model-lifecycle.js";
+import {
+  createSelfImprovementProposal,
+  proposeSelfMaintainerAction,
+  runSelfMaintainerRadar,
+} from "../lib/self-maintainer.js";
 import { workspaceContextService } from "../lib/code-context.js";
 import { thoughtLog } from "../lib/thought-log.js";
 import {
@@ -23,6 +27,7 @@ import {
   agentDisplayName,
 } from "../lib/supervisor-agent.js";
 import type { RoutingHint } from "../lib/model-orchestrator.js";
+import { recordAuditEvent } from "../lib/platform-foundation.js";
 
 // ── Agent Action types ────────────────────────────────────────────────────────
 
@@ -195,6 +200,39 @@ function contextMetadata(context: NonNullable<Awaited<ReturnType<typeof maybeBui
   };
 }
 
+function chatPromptHash(messages: ChatMessage[]): string {
+  return createHash("sha256").update(JSON.stringify(messages.map(message => ({
+    role: message.role,
+    contentLength: message.content.length,
+    contentHash: createHash("sha256").update(message.content).digest("hex"),
+  })))).digest("hex");
+}
+
+function chatTraceMetadata(input: {
+  sessionId?: string;
+  workspacePath?: string;
+  requestedModel?: string;
+  resolvedModel?: string;
+  routingIntent?: string;
+  messageCount: number;
+  promptHash: string;
+  contextAttached?: boolean;
+  streaming?: boolean;
+}) {
+  return {
+    sessionId: input.sessionId,
+    workspacePath: input.workspacePath,
+    requestedModel: input.requestedModel,
+    resolvedModel: input.resolvedModel,
+    provider: "ollama/local",
+    routingIntent: input.routingIntent,
+    messageCount: input.messageCount,
+    promptHash: input.promptHash,
+    contextAttached: input.contextAttached === true,
+    streaming: input.streaming === true,
+  };
+}
+
 // GET /chat/models
 router.get("/chat/models", async (_req, res) => {
   const gateway = await getUniversalGatewayTags();
@@ -267,6 +305,21 @@ router.post("/chat/send", async (req, res) => {
     });
 
     const result = await sendGatewayChat(upstreamMessages, resolvedModel || undefined, routingHint);
+    recordAuditEvent({
+      eventType: "model_call",
+      action: "chat.send",
+      target: result.model,
+      metadata: chatTraceMetadata({
+        sessionId: sessionId || undefined,
+        workspacePath,
+        requestedModel: model || undefined,
+        resolvedModel: result.model,
+        routingIntent: routingHint.supervisorIntent,
+        messageCount: messages.length,
+        promptHash: chatPromptHash(upstreamMessages),
+        contextAttached: !!codeContext,
+      }),
+    });
     const assistantMsg: ChatMessage = { role: "assistant", content: result.message };
     const persistedModel = result.model;
 
@@ -304,6 +357,19 @@ router.post("/chat/send", async (req, res) => {
       },
     });
   } catch (error) {
+    recordAuditEvent({
+      eventType: "model_call",
+      action: "chat.send",
+      target: model || "auto",
+      result: "failed",
+      metadata: {
+        sessionId: sessionId || undefined,
+        workspacePath,
+        promptHash: chatPromptHash(messages),
+        messageCount: messages.length,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    });
     return res
       .status(500)
       .json({ success: false, message: error instanceof Error ? error.message : String(error) });
@@ -389,6 +455,22 @@ router.post("/chat/stream", async (req, res) => {
       },
     };
 
+    recordAuditEvent({
+      eventType: "model_call",
+      action: "chat.stream",
+      target: resolvedModel || "auto-routed model",
+      metadata: chatTraceMetadata({
+        workspacePath,
+        requestedModel: model || undefined,
+        resolvedModel: resolvedModel || undefined,
+        routingIntent: routingHint.supervisorIntent,
+        messageCount: messages.length,
+        promptHash: chatPromptHash(upstreamMessages),
+        contextAttached: !!codeContext || !!ragContext,
+        streaming: true,
+      }),
+    });
+
     await streamGatewayChatToSse(res, {
       messages:       upstreamMessages,
       requestedModel: resolvedModel || undefined,
@@ -413,6 +495,18 @@ router.post("/chat/stream", async (req, res) => {
       },
     });
   } catch (error) {
+    recordAuditEvent({
+      eventType: "model_call",
+      action: "chat.stream",
+      target: model || "auto",
+      result: "failed",
+      metadata: {
+        workspacePath,
+        promptHash: chatPromptHash(messages),
+        messageCount: messages.length,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    });
     if (res.writableEnded || res.destroyed) {
       return;
     }
@@ -488,28 +582,109 @@ router.post("/chat/command", async (req, res) => {
 
   const cmd = command.toLowerCase();
 
+  if (cmd === "check updates" || cmd === "/check-updates" || cmd === "/updates" || cmd === "/maintainer check") {
+    const radar = await runSelfMaintainerRadar({ dryRunOnly: true, includeNetworkChecks: false });
+    return res.json({
+      success: true,
+      action: "check_updates",
+      message: `Self-maintainer dry-run found ${radar.proposals.length} proposal(s). No update was applied.`,
+      radar,
+    });
+  }
+
+  if (cmd.startsWith("prepare patch") || cmd.startsWith("/prepare-patch")) {
+    const request = command.replace(/^\/?prepare[- ]patch/i, "").trim();
+    if (!request) return res.status(400).json({ success: false, message: "patch request required" });
+    const result = await createSelfImprovementProposal({ request, dryRunOnly: false });
+    return res.status(202).json({
+      success: false,
+      action: "prepare_patch",
+      approvalRequired: result.approvalRequired,
+      approval: result.approval,
+      proposal: result.proposal,
+      message: "Self-improvement proposal queued for approval. No code was changed.",
+    });
+  }
+
+  if (cmd.startsWith("explain update") || cmd.startsWith("/explain-update")) {
+    const radar = await runSelfMaintainerRadar({ dryRunOnly: true, includeNetworkChecks: false });
+    const query = command.replace(/^\/?explain[- ]update/i, "").trim().toLowerCase();
+    const proposal = query
+      ? radar.proposals.find((item) => item.id.toLowerCase().includes(query) || item.title.toLowerCase().includes(query) || item.kind.toLowerCase().includes(query))
+      : radar.proposals[0];
+    return res.json({
+      success: true,
+      action: "explain_update",
+      message: proposal
+        ? `${proposal.title}: ${proposal.resultMessage}`
+        : "No update proposal matched. Run check updates first.",
+      proposal,
+    });
+  }
+
+  if (cmd === "run tests" || cmd === "/run-tests" || cmd === "/maintainer test") {
+    const result = await proposeSelfMaintainerAction({
+      action: "test",
+      targetIds: ["phase06-required-checks"],
+      dryRunOnly: false,
+      details: { chatCommand: "run tests", noTestCommandExecuted: true },
+    });
+    return res.status(result.approvalRequired ? 202 : 200).json({
+      success: false,
+      action: "run_tests",
+      approvalRequired: result.approvalRequired,
+      approval: result.approval,
+      proposal: result.proposal,
+      message: "Test run proposal queued. No command was executed from chat.",
+    });
+  }
+
+  if (cmd.startsWith("rollback proposal") || cmd.startsWith("/rollback-proposal")) {
+    const target = command.replace(/^\/?rollback[- ]proposal/i, "").trim() || "selected-maintainer-proposal";
+    const result = await proposeSelfMaintainerAction({
+      action: "rollback",
+      targetIds: [target],
+      dryRunOnly: false,
+      details: { chatCommand: "rollback proposal", noRollbackExecuted: true },
+    });
+    return res.status(result.approvalRequired ? 202 : 200).json({
+      success: false,
+      action: "rollback_proposal",
+      approvalRequired: result.approvalRequired,
+      approval: result.approval,
+      proposal: result.proposal,
+      message: "Rollback proposal queued. No files or models were changed.",
+    });
+  }
+
   const installMatch = cmd.match(/^\/(install|pull)\s+(.+)/);
   if (installMatch) {
     const modelName = installMatch[2].trim();
-    const job = queueUniversalModelPull(modelName);
-    return res.json({
-      success: true,
+    const proposal = await proposeModelLifecycleAction({ action: "pull", modelName });
+    return res.status(202).json({
+      success: false,
       action: "install",
       modelName,
-      jobId: job.id,
-      message: `Queued pull for ${modelName}. Check the Models page for progress.`,
+      approvalRequired: true,
+      approval: proposal.approval,
+      proposal,
+      message: `Model pull proposal queued for ${modelName}. No model was pulled before approval.`,
     });
   }
 
   const stopMatch = cmd.match(/^\/stop\s+(.+)/);
   if (stopMatch) {
     const modelName = stopMatch[1].trim();
-    try {
-      await unloadOllamaModel(modelName);
-      return res.json({ success: true, action: "stop", modelName, message: `${modelName} unloaded from VRAM.` });
-    } catch (error) {
-      return res.json({ success: false, message: error instanceof Error ? error.message : String(error) });
-    }
+    const proposal = await proposeModelLifecycleAction({ action: "unload", modelName });
+    return res.status(202).json({
+      success: false,
+      action: "stop",
+      modelName,
+      approvalRequired: true,
+      approval: proposal.approval,
+      proposal,
+      message: `Model unload proposal queued for ${modelName}. No model was unloaded before approval.`,
+    });
   }
 
   if (cmd === "/models") {
@@ -552,8 +727,12 @@ router.post("/chat/command", async (req, res) => {
       action: "help",
       message: [
         "**Chat Commands:**",
-        "• `/install <model>` — queue a model pull",
-        "• `/stop <model>` — unload a model from VRAM",
+        "• `/install <model>` — create an approval-gated model pull proposal",
+        "• `/stop <model>` — create an approval-gated model unload proposal",
+        "• `check updates` — run the self-maintainer update radar in dry-run mode",
+        "• `prepare patch <request>` — create an approval-gated self-improvement proposal",
+        "• `run tests` — create an approval-gated test-run proposal",
+        "• `rollback proposal <id>` — create an approval-gated rollback proposal",
         "• `/models` — list installed models",
         "• `/status` — show system status",
         "• `/index` — refresh the code context index",

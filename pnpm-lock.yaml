@@ -23,8 +23,8 @@ importers:
         specifier: 2.8.6
         version: 2.8.6
       diff:
-        specifier: 7.0.0
-        version: 7.0.0
+        specifier: 8.0.3
+        version: 8.0.3
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@types/better-sqlite3@7.6.13)(@types/pg@8.20.0)(better-sqlite3@12.9.0)(pg@8.20.0)
@@ -1218,8 +1218,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  diff@7.0.0:
-    resolution: {integrity: sha512-PJWHUb1RFevKCwaFA9RlG5tCd+FO5iRh9A8HEtkmBH2Li03iJriB6m6JIN4rGz3K3JLawI7/veA1xzRKP6ISBw==}
+  diff@8.0.3:
+    resolution: {integrity: sha512-qejHi7bcSD4hQAZE0tNAawRK1ZtafHDmMTMkrrIGgSLl7hTnQHmKCeB45xAcbfTqK2zowkM3j3bHt/4b/ARbYQ==}
     engines: {node: '>=0.3.1'}
 
   dingbat-to-unicode@1.0.1:
@@ -2819,7 +2819,7 @@ snapshots:
 
   '@types/diff@8.0.0':
     dependencies:
-      diff: 7.0.0
+      diff: 8.0.3
 
   '@types/estree@1.0.8': {}
 
@@ -3050,7 +3050,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  diff@7.0.0: {}
+  diff@8.0.3: {}
 
   dingbat-to-unicode@1.0.1: {}
 

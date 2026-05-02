@@ -13,7 +13,8 @@
     "test:permission-notice": "tsx tests/permission-notice.test.ts",
     "test:page-permissions": "tsx tests/page-permission-ssr.test.tsx",
     "test:api": "pnpm run test:api-error && pnpm run test:api-client && pnpm run test:permission-notice && pnpm run test:page-permissions",
-    "test": "pnpm run test:api"
+    "test:ui-integration": "tsx tests/ui-integration.test.tsx",
+    "test": "pnpm run test:api && pnpm run test:ui-integration"
   },
   "dependencies": {
     "@tanstack/react-query": "5.97.0",

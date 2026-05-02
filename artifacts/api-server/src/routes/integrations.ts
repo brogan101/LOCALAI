@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { exec } from "child_process";
 import { readFile } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
@@ -14,6 +13,14 @@ import {
 } from "../lib/runtime.js";
 import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { agentExecGuard } from "../lib/route-guards.js";
+import { recordAuditEvent, upsertIntegrationState } from "../lib/platform-foundation.js";
+import {
+  evaluateToolCall,
+  integrationSourceToTool,
+  type ToolCallResult,
+  type ToolIntegrationSource,
+  type ToolPermissionScope,
+} from "../lib/tool-registry.js";
 
 const router = Router();
 const TOOLS_DIR = toolsRoot();
@@ -43,20 +50,25 @@ interface Integration {
   running: () => Promise<boolean>;
 }
 
+export interface IntegrationListEntry extends ToolIntegrationSource {
+  localAiConfig?: Record<string, unknown>;
+  aiderTip?: string;
+}
+
 const INTEGRATIONS: Integration[] = [
   {
     id: "open-webui", name: "Open WebUI", repo: "https://github.com/open-webui/open-webui", category: "core",
     description: "Polished browser-first chat interface for any local or remote LLM. Supports RAG, tools, model management, and collaborative workspaces.",
-    installMethod: "pip", pipPackage: "open-webui", localPort: 8080, healthUrl: "http://localhost:8080",
+    installMethod: "pip", pipPackage: "open-webui", localPort: 8080, healthUrl: "http://127.0.0.1:8080",
     detect: async () => commandExists("open-webui"),
     version: async () => maybeVersion("open-webui --version"),
-    running: async () => fetchText("http://localhost:8080", undefined, 2500).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:8080", undefined, 2500).then(() => true).catch(() => false),
     installCmd: "pip install open-webui",
     startCmd: isWindows ? 'start "Open WebUI" cmd /k "open-webui serve"' : "open-webui serve",
     updateCmd: "pip install --upgrade open-webui",
     docs: "https://docs.openwebui.com", usedFor: "Main chat UI, RAG, model management, team workspaces",
     localAiConfig: {
-      openAiApiBaseUrl: "http://localhost:3001/v1",
+      openAiApiBaseUrl: "http://127.0.0.1:3001/v1",
       openAiApiKey: "localai",
       supportedEndpoints: ["/v1/models", "/v1/chat/completions", "/v1/embeddings", "/v1/responses"],
     },
@@ -64,10 +76,10 @@ const INTEGRATIONS: Integration[] = [
   {
     id: "open-webui-pipelines", name: "Open WebUI Pipelines", repo: "https://github.com/open-webui/pipelines", category: "core",
     description: "Workflow and pipeline engine for Open WebUI — RAG pipelines, function calling, agent chains, and custom tools exposed as callable endpoints.",
-    installMethod: "pip", pipPackage: "open-webui-pipelines", localPort: 9099, healthUrl: "http://localhost:9099",
-    detect: async () => fetchText("http://localhost:9099", undefined, 2000).then(() => true).catch(() => false),
+    installMethod: "pip", pipPackage: "open-webui-pipelines", localPort: 9099, healthUrl: "http://127.0.0.1:9099",
+    detect: async () => fetchText("http://127.0.0.1:9099", undefined, 2000).then(() => true).catch(() => false),
     version: async () => null,
-    running: async () => fetchText("http://localhost:9099", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:9099", undefined, 2000).then(() => true).catch(() => false),
     installCmd: "pip install open-webui-pipelines",
     startCmd: "uvicorn main:app --host 0.0.0.0 --port 9099",
     updateCmd: "pip install --upgrade open-webui-pipelines",
@@ -76,28 +88,28 @@ const INTEGRATIONS: Integration[] = [
   {
     id: "litellm", name: "LiteLLM Gateway", repo: "https://github.com/BerriAI/litellm", category: "core",
     description: `OpenAI-compatible proxy that unifies all your local and remote models under one endpoint. Enables model aliases, fallbacks, load balancing, and cost tracking. Fixes Aider's "LLM Provider NOT provided" error.`,
-    installMethod: "pip", pipPackage: "litellm[proxy]", localPort: 4000, healthUrl: "http://localhost:4000/health",
+    installMethod: "pip", pipPackage: "litellm[proxy]", localPort: 4000, healthUrl: "http://127.0.0.1:4000/health",
     detect: async () => commandExists("litellm"),
     version: async () => maybeVersion("litellm --version"),
-    running: async () => fetchText("http://localhost:4000/health", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:4000/health", undefined, 2000).then(() => true).catch(() => false),
     installCmd: 'pip install "litellm[proxy]"',
     startCmd: isWindows ? `start "LiteLLM" cmd /k "litellm --model ollama/qwen2.5-coder:7b --port 4000"` : "litellm --model ollama/qwen2.5-coder:7b --port 4000",
     updateCmd: 'pip install --upgrade "litellm[proxy]"',
     docs: "https://docs.litellm.ai", usedFor: "Unified model gateway, Aider integration, Continue integration, cost tracking",
-    aiderTip: "Direct LocalAI endpoint: aider --model openai/<model-name> --openai-api-base http://localhost:3001/v1 --openai-api-key localai",
+    aiderTip: "Direct LocalAI endpoint: aider --model openai/<model-name> --openai-api-base http://127.0.0.1:3001/v1 --openai-api-key localai",
     localAiConfig: {
-      directBaseUrl: "http://localhost:3001/v1",
-      proxyBaseUrl: "http://localhost:4000",
-      exampleCommand: "litellm --model openai/qwen2.5-coder:7b --api_base http://localhost:3001/v1 --api_key localai --port 4000",
+      directBaseUrl: "http://127.0.0.1:3001/v1",
+      proxyBaseUrl: "http://127.0.0.1:4000",
+      exampleCommand: "litellm --model openai/qwen2.5-coder:7b --api_base http://127.0.0.1:3001/v1 --api_key localai --port 4000",
     },
   },
   {
     id: "mcpo", name: "MCPO (MCP→OpenAPI)", repo: "https://github.com/open-webui/mcpo", category: "core",
     description: "Exposes MCP (Model Context Protocol) tool servers as OpenAPI REST endpoints. Bridges Claude's tool ecosystem into Open WebUI and LiteLLM.",
-    installMethod: "pip", pipPackage: "mcpo", localPort: 8200, healthUrl: "http://localhost:8200",
+    installMethod: "pip", pipPackage: "mcpo", localPort: 8200, healthUrl: "http://127.0.0.1:8200",
     detect: async () => commandExists("mcpo"),
     version: async () => null,
-    running: async () => fetchText("http://localhost:8200", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:8200", undefined, 2000).then(() => true).catch(() => false),
     installCmd: "pip install mcpo", startCmd: "mcpo --port 8200", updateCmd: "pip install --upgrade mcpo",
     docs: "https://github.com/open-webui/mcpo", usedFor: "Expose MCP tools to Open WebUI and LiteLLM as callable REST endpoints",
   },
@@ -111,9 +123,9 @@ const INTEGRATIONS: Integration[] = [
     installCmd: "pip install aider-chat", startCmd: "aider", updateCmd: "pip install --upgrade aider-chat",
     docs: "https://aider.chat/docs", usedFor: "Repo-level code editing, architect mode, multi-file changes",
     localAiConfig: {
-      baseUrl: "http://localhost:3001/v1",
+      baseUrl: "http://127.0.0.1:3001/v1",
       apiKey: "localai",
-      exampleCommand: "aider --model openai/qwen2.5-coder:7b --openai-api-base http://localhost:3001/v1 --openai-api-key localai",
+      exampleCommand: "aider --model openai/qwen2.5-coder:7b --openai-api-base http://127.0.0.1:3001/v1 --openai-api-key localai",
     },
   },
   {
@@ -127,18 +139,258 @@ const INTEGRATIONS: Integration[] = [
     docs: "https://docs.continue.dev", usedFor: "VS Code inline completions, codebase chat, rule packs",
     localAiConfig: {
       provider: "openai",
-      apiBase: "http://localhost:3001/v1",
+      apiBase: "http://127.0.0.1:3001/v1",
       apiKey: "localai",
-      modelsEndpoint: "http://localhost:3001/v1/models",
+      modelsEndpoint: "http://127.0.0.1:3001/v1/models",
     },
+  },
+  {
+    id: "freecad", name: "FreeCAD", repo: "https://github.com/FreeCAD/FreeCAD", category: "maker",
+    description: "Parametric CAD workbench. Phase 13B exposes proposal/status surfaces only; no FreeCAD or macro execution is wired here.",
+    installMethod: "manual",
+    detect: async () => commandExists("freecad") || commandExists("FreeCAD"),
+    version: async () => maybeVersion("freecad --version"),
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://wiki.freecad.org", usedFor: "FreeCAD MCP/command profile status and future approval-gated local CAD review",
+  },
+  {
+    id: "cadquery-build123d", name: "CadQuery / build123d", repo: "https://github.com/CadQuery/cadquery", category: "maker",
+    description: "CAD-as-code libraries. Phase 13B creates review-only proposal metadata; no Python CAD runtime is executed.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://cadquery.readthedocs.io", usedFor: "Future local CAD-as-code generation after explicit configuration",
+  },
+  {
+    id: "kicad", name: "KiCad", repo: "https://gitlab.com/kicad/code/kicad", category: "maker",
+    description: "Electronics CAD suite. Phase 13B supports disabled/not_configured adapter status and project-link proposals only.",
+    installMethod: "manual",
+    detect: async () => commandExists("kicad-cli") || commandExists("kicad"),
+    version: async () => maybeVersion("kicad-cli version"),
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://docs.kicad.org", usedFor: "Future schematic/PCB metadata workflows after explicit configuration",
+  },
+  {
+    id: "gnucleus-text-to-cad", name: "gNucleus Text-to-CAD MCP", repo: "https://github.com/gNucleus/text-to-cad-mcp", category: "maker",
+    description: "Optional cloud/API text-to-CAD provider. Disabled by default; requires explicit configuration, data classification, and approval before any data leaves the machine.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only", startCmd: "", updateCmd: "",
+    docs: "https://github.com/gNucleus/text-to-cad-mcp", usedFor: "Future optional text-to-CAD cloud workflow after explicit approval",
+  },
+  {
+    id: "buildcad-ai", name: "BuildCAD AI", repo: "https://buildcad.ai", category: "maker",
+    description: "Optional cloud/account text or image-to-CAD provider. Disabled by default and never used by LOCALAI without explicit configuration and approval.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only", startCmd: "", updateCmd: "",
+    docs: "https://buildcad.ai", usedFor: "Future optional cloud CAD generation with data-leaves-machine warning",
+  },
+  {
+    id: "orca-prusa-superslicer", name: "OrcaSlicer / PrusaSlicer / SuperSlicer", repo: "https://github.com/SoftFever/OrcaSlicer", category: "maker",
+    description: "Slicer family for 3D-print preparation. Phase 13C exposes dry-run/config-validation proposal status only; no slicer process runs.",
+    installMethod: "manual",
+    detect: async () => commandExists("orca-slicer") || commandExists("prusa-slicer") || commandExists("superslicer"),
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://github.com/SoftFever/OrcaSlicer/wiki", usedFor: "Phase 13C slicer status and dry-run proposal workflow; no real slicing or G-code generation",
+  },
+  {
+    id: "octoprint", name: "OctoPrint", repo: "https://github.com/OctoPrint/OctoPrint", category: "maker",
+    description: "3D printer server. Phase 13C represents queue/start approval proposals only; no files upload and no printer API calls occur.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://docs.octoprint.org", usedFor: "Phase 13C printer status and approval-required queue/start proposals; execution remains not_configured",
+  },
+  {
+    id: "moonraker-mainsail-fluidd", name: "Moonraker / Mainsail / Fluidd", repo: "https://github.com/Arksine/moonraker", category: "maker",
+    description: "Klipper printer API/UI stack. Phase 13C represents printer workflow proposals only; heater/motor commands are approval-gated and no API calls occur.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://moonraker.readthedocs.io", usedFor: "Phase 13C printer API/profile status and approval-required heater/motor/print proposals",
+  },
+  {
+    id: "obico", name: "Obico", repo: "https://github.com/TheSpaghettiDetective/obico-server", category: "maker",
+    description: "3D printer monitoring. Phase 13C reports not_configured/degraded monitoring state only and does not fake failure detection.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://www.obico.io/docs", usedFor: "Phase 13C monitoring status visibility; no camera, cloud, or Obico API calls by default",
+  },
+  {
+    id: "spoolman", name: "Spoolman", repo: "https://github.com/Donkie/Spoolman", category: "maker",
+    description: "Filament inventory tracker. Phase 13C uses local material metadata by default and blocks queue proposals when material is missing/unknown.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://github.com/Donkie/Spoolman", usedFor: "Phase 13C filament check status; inventory remains unverified until explicitly configured",
+  },
+  {
+    id: "cncjs-linuxcnc-fluidnc", name: "CNCjs / LinuxCNC / FluidNC", repo: "https://github.com/cncjs/cncjs", category: "maker",
+    description: "CNC controller ecosystem. Phase 13D exposes safety-console/setup-sheet status only; G-code send, motion, and spindle start are manual-only or blocked.",
+    installMethod: "manual",
+    detect: async () => commandExists("cncjs") || commandExists("linuxcnc"),
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://cnc.js.org", usedFor: "Phase 13D CNC provider status, setup-sheet proposals, and manual-only dangerous-action gates; no controller/API/serial execution",
+  },
+  {
+    id: "freecad-path-cam", name: "FreeCAD Path / CAM", repo: "https://wiki.freecad.org/Path_Workbench", category: "maker",
+    description: "CAM/profile planning surface. Phase 13D creates proposal-only setup sheets and never generates live toolpaths or posts G-code.",
+    installMethod: "manual",
+    detect: async () => commandExists("freecad") || commandExists("FreeCAD"),
+    version: async () => maybeVersion("freecad --version"),
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://wiki.freecad.org/Path_Workbench", usedFor: "Phase 13D CAM setup-sheet metadata and offline simulation status; no CAM execution or G-code output",
+  },
+  {
+    id: "bcnc", name: "bCNC", repo: "https://github.com/vlachoudis/bCNC", category: "maker",
+    description: "CNC sender reference. Disabled/not_configured until a later hardware-safe executor phase; Phase 13D never streams G-code.",
+    installMethod: "manual",
+    detect: async () => commandExists("bcnc"),
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://github.com/vlachoudis/bCNC", usedFor: "Phase 13D sender status only; send/stream/jog remains manual-only",
+  },
+  {
+    id: "lightburn-style-laser", name: "LightBurn-style laser workflow", repo: "https://lightburnsoftware.com", category: "maker",
+    description: "Laser planning reference. Phase 13D setup sheets can record power/speed/PPE review, but laser fire, motion, and relay/power control are manual-only.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only", startCmd: "", updateCmd: "",
+    docs: "https://docs.lightburnsoftware.com", usedFor: "Phase 13D laser setup-sheet metadata and blocked/manual-only laser actions; no laser API/tool execution",
+  },
+  {
+    id: "serial-usb-shop-devices", name: "Serial / USB shop devices", repo: "local hardware profile", category: "maker",
+    description: "Serial and USB hardware access profile. Disabled in Phase 13D; no writes, firmware flashing, relay toggles, or bench equipment control occur.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only in a later hardware-safe phase", startCmd: "", updateCmd: "",
+    docs: "local hardware safety policy", usedFor: "Phase 13D explicit disabled/not_configured state for serial/USB/electronics bench writes",
+  },
+  {
+    id: "inventree", name: "InvenTree", repo: "https://github.com/inventree/InvenTree", category: "maker",
+    description: "Parts inventory system. Phase 17B uses local inventory records by default and does not sync external inventory.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://docs.inventree.org", usedFor: "Phase 17B optional inventory provider status; sync remains not_configured until explicitly approved",
+  },
+  {
+    id: "snipe-it", name: "Snipe-IT", repo: "https://github.com/snipe/snipe-it", category: "maker",
+    description: "Asset inventory system. Phase 17B records local asset metadata only; external writes and sync are disabled.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://snipe-it.readme.io", usedFor: "Phase 17B optional asset provider status; not_configured by default",
+  },
+  {
+    id: "homebox", name: "HomeBox", repo: "https://github.com/sysadminsmedia/homebox", category: "maker",
+    description: "Home inventory tracker. Phase 17B can map local inventory concepts without calling HomeBox.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://homebox.software", usedFor: "Phase 17B optional home inventory provider status; not_configured by default",
+  },
+  {
+    id: "partkeepr", name: "PartKeepr", repo: "https://github.com/partkeepr/PartKeepr", category: "maker",
+    description: "Parts inventory tracker. Phase 17B keeps LOCALAI local-first and does not call PartKeepr.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://github.com/partkeepr/PartKeepr", usedFor: "Phase 17B optional parts provider status; not_configured by default",
+  },
+  {
+    id: "python-obd", name: "python-OBD", repo: "https://github.com/brendan-w/python-OBD", category: "automotive",
+    description: "Optional OBD-II adapter library. Phase 18 represents provider status only; no vehicle hardware connection, scan, or clear-code action is executed.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only in a later hardware-safe phase", startCmd: "", updateCmd: "",
+    docs: "https://github.com/brendan-w/python-OBD", usedFor: "Phase 18 Master Tech provider status and future approval-gated read-only OBD workflows",
+  },
+  {
+    id: "elm327-emulator", name: "ELM327 emulator", repo: "verify current repo before install", category: "automotive",
+    description: "Development/test emulator profile. Phase 18 can use sample DTC metadata but does not start emulator processes.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only", startCmd: "", updateCmd: "",
+    docs: "verify current repo before install", usedFor: "Phase 18 sample/emulator status only; no emulator process or network call",
+  },
+  {
+    id: "savvycan", name: "SavvyCAN", repo: "https://www.savvycan.com/", category: "automotive",
+    description: "CAN capture/review tool. Phase 18 keeps CAN capture disabled/not_configured and blocks CAN injection.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual install only", startCmd: "", updateCmd: "",
+    docs: "https://www.savvycan.com/", usedFor: "Future read-only CAN capture review after explicit configuration; no injection by default",
+  },
+  {
+    id: "ovms", name: "OVMS", repo: "https://github.com/openvehicles/Open-Vehicle-Monitoring-System-3", category: "automotive",
+    description: "Optional vehicle telemetry hardware. Phase 18 reports not_configured and does not contact OVMS hardware or APIs.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual configure only", startCmd: "", updateCmd: "",
+    docs: "https://github.com/openvehicles/Open-Vehicle-Monitoring-System-3", usedFor: "Future vehicle telemetry with approval and privacy review; not configured by default",
+  },
+  {
+    id: "aces-ecu-log-import", name: "ACES ECU log import", repo: "local workspace file import", category: "automotive",
+    description: "ACES ECU/log/tuning note import concept. Phase 18 is file/workspace metadata only; ECU writes and tuning changes are blocked.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "manual workspace import only", startCmd: "", updateCmd: "",
+    docs: "local vehicle project notes", usedFor: "Phase 18 ACES log/tuning note metadata; no ECU API/tool execution",
   },
   {
     id: "librechat", name: "LibreChat", repo: "https://github.com/danny-avila/LibreChat", category: "chat",
     description: "Advanced self-hosted chat workstation with agents, MCP support, code interpreter, artifacts, multi-model switching, message search, and actions/functions. More powerful than Open WebUI for serious agentic workflows.",
-    installMethod: "docker", localPort: 3080, healthUrl: "http://localhost:3080",
-    detect: async () => fetchText("http://localhost:3080", undefined, 2000).then(() => true).catch(() => false),
+    installMethod: "docker", localPort: 3080, healthUrl: "http://127.0.0.1:3080",
+    detect: async () => fetchText("http://127.0.0.1:3080", undefined, 2000).then(() => true).catch(() => false),
     version: async () => null,
-    running: async () => fetchText("http://localhost:3080", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:3080", undefined, 2000).then(() => true).catch(() => false),
     installCmd: "docker compose up -d  # See https://www.librechat.ai/docs/local",
     startCmd: "docker compose up -d", updateCmd: "docker compose pull && docker compose up -d",
     docs: "https://www.librechat.ai/docs", usedFor: "Agents, MCP tools, artifacts, code interpreter, serious agentic work",
@@ -146,10 +398,10 @@ const INTEGRATIONS: Integration[] = [
   {
     id: "jan", name: "Jan", repo: "https://github.com/janhq/jan", category: "local-models",
     description: "Local-first desktop app for downloading, running, and managing local models. Provides its own OpenAI-compatible server. Alternative to Ollama for users who prefer a GUI-first model manager.",
-    installMethod: "winget", wingetId: "janhq.jan", localPort: 1337, healthUrl: "http://localhost:1337",
-    detect: async () => fetchText("http://localhost:1337", undefined, 2000).then(() => true).catch(() => false),
+    installMethod: "winget", wingetId: "janhq.jan", localPort: 1337, healthUrl: "http://127.0.0.1:1337",
+    detect: async () => fetchText("http://127.0.0.1:1337", undefined, 2000).then(() => true).catch(() => false),
     version: async () => null,
-    running: async () => fetchText("http://localhost:1337", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:1337", undefined, 2000).then(() => true).catch(() => false),
     installCmd: isWindows ? "winget install janhq.jan" : "Download from https://jan.ai",
     startCmd: isWindows ? 'start "" "jan"' : "jan",
     updateCmd: isWindows ? "winget upgrade janhq.jan" : "Download latest from https://jan.ai",
@@ -161,17 +413,69 @@ const INTEGRATIONS: Integration[] = [
     installMethod: "manual", localPort: 3001,
     detect: async () => false,
     version: async () => null,
-    running: async () => fetchText("http://localhost:3001/api/ping", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:3001/api/ping", undefined, 2000).then(() => true).catch(() => false),
     installCmd: "Download installer from https://useanything.com", startCmd: "", updateCmd: "Download latest from https://useanything.com",
     docs: "https://docs.useanything.com", usedFor: "Local RAG on your documents, private knowledge base",
   },
   {
+    id: "chatwoot", name: "Chatwoot", repo: "https://github.com/chatwoot/chatwoot", category: "business",
+    description: "Optional customer support inbox adapter profile for Phase 12A draft-first workflows. Disabled until explicitly configured.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "Configure a self-hosted/local Chatwoot endpoint in the Business page.",
+    startCmd: "",
+    updateCmd: "",
+    docs: "https://www.chatwoot.com/docs",
+    usedFor: "Support inbox status and approved response draft handoff. No external send occurs in Phase 12A.",
+  },
+  {
+    id: "twenty-crm", name: "Twenty CRM", repo: "https://github.com/twentyhq/twenty", category: "business",
+    description: "Optional CRM adapter profile for Phase 12A notes and lead drafts. Disabled until explicitly configured.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "Configure a self-hosted/local Twenty endpoint in the Business page.",
+    startCmd: "",
+    updateCmd: "",
+    docs: "https://twenty.com/developers",
+    usedFor: "CRM note proposals and lead draft handoff. No external update occurs in Phase 12A.",
+  },
+  {
+    id: "cal-com", name: "Cal.com / Cal.diy", repo: "https://github.com/calcom/cal.com", category: "business",
+    description: "Optional calendar scheduling adapter profile for slot suggestions. Disabled until explicitly configured.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "Configure a self-hosted/local Cal endpoint in the Business page.",
+    startCmd: "",
+    updateCmd: "",
+    docs: "https://cal.com/docs",
+    usedFor: "Calendar slot suggestions only. No booking occurs in Phase 12A.",
+  },
+  {
+    id: "postiz", name: "Postiz", repo: "https://github.com/gitroomhq/postiz-app", category: "business",
+    description: "Optional social content adapter profile for post drafts. Disabled until explicitly configured.",
+    installMethod: "manual",
+    detect: async () => false,
+    version: async () => null,
+    running: async () => false,
+    installCmd: "Configure a self-hosted/local Postiz endpoint in the Business page.",
+    startCmd: "",
+    updateCmd: "",
+    docs: "https://docs.postiz.com",
+    usedFor: "Content draft and scheduling proposals only. No posting occurs in Phase 12A.",
+  },
+  {
     id: "langflow", name: "Langflow", repo: "https://github.com/langflow-ai/langflow", category: "workflows",
     description: "Visual agent and workflow builder. Drag-and-drop LLM pipeline construction. Exposes flows as API endpoints and MCP servers. Best pick for visual automation without writing code.",
-    installMethod: "pip", pipPackage: "langflow", localPort: 7860, healthUrl: "http://localhost:7860",
+    installMethod: "pip", pipPackage: "langflow", localPort: 7860, healthUrl: "http://127.0.0.1:7860",
     detect: async () => commandExists("langflow"),
     version: async () => maybeVersion("langflow --version"),
-    running: async () => fetchText("http://localhost:7860", undefined, 2000).then(() => true).catch(() => false),
+    running: async () => fetchText("http://127.0.0.1:7860", undefined, 2000).then(() => true).catch(() => false),
     installCmd: "pip install langflow",
     startCmd: isWindows ? 'start "Langflow" cmd /k "langflow run"' : "langflow run",
     updateCmd: "pip install --upgrade langflow",
@@ -302,40 +606,63 @@ async function saveState(state: Record<string, any>): Promise<void> {
   await writeManagedJson(INTEGRATIONS_STATE_FILE, state);
 }
 
-router.get("/integrations", async (_req, res) => {
+async function integrationListEntry(
+  intg: Integration,
+  state: Record<string, any>,
+  options: { liveChecks?: boolean; persist?: boolean } = {},
+): Promise<IntegrationListEntry> {
+  const liveChecks = options.liveChecks !== false;
+  let installed = Boolean(state[intg.id]?.installed);
+  let running = Boolean(state[intg.id]?.running);
+  let version: string | null = typeof state[intg.id]?.version === "string" ? state[intg.id].version : null;
+
+  if (liveChecks) {
+    try { installed = await intg.detect(); } catch {}
+    try { running = installed && await intg.running(); } catch {}
+    try { version = installed ? await intg.version() : null; } catch {}
+  }
+
+  const pinned = Boolean(state[intg.id]?.pinned);
+  const mergedState = {
+    ...state[intg.id],
+    installed,
+    running,
+    version,
+    pinned,
+    lastCheckedAt: new Date().toISOString(),
+  };
+  if (options.persist !== false) upsertIntegrationState(intg.id, mergedState);
+  return {
+    id: intg.id,
+    name: intg.name,
+    repo: intg.repo,
+    category: intg.category,
+    description: intg.description,
+    installMethod: intg.installMethod,
+    installCmd: intg.installCmd,
+    startCmd: intg.startCmd,
+    updateCmd: intg.updateCmd,
+    docs: intg.docs,
+    usedFor: intg.usedFor,
+    localPort: intg.localPort,
+    healthUrl: intg.healthUrl,
+    localAiConfig: intg.localAiConfig,
+    aiderTip: intg.aiderTip,
+    installed,
+    running,
+    version,
+    pinned,
+    updateAvailable: false,
+  };
+}
+
+export async function listIntegrationToolSources(options: { liveChecks?: boolean; persist?: boolean } = {}): Promise<IntegrationListEntry[]> {
   const state = await loadState();
-  const results = await Promise.all(
-    INTEGRATIONS.map(async (intg) => {
-      let installed = false;
-      let running = false;
-      let version: string | null = null;
-      try { installed = await intg.detect(); } catch {}
-      try { running = installed && await intg.running(); } catch {}
-      try { version = installed ? await intg.version() : null; } catch {}
-      return {
-        id: intg.id,
-        name: intg.name,
-        repo: intg.repo,
-        category: intg.category,
-        description: intg.description,
-        installMethod: intg.installMethod,
-        installCmd: intg.installCmd,
-        startCmd: intg.startCmd,
-        updateCmd: intg.updateCmd,
-        docs: intg.docs,
-        usedFor: intg.usedFor,
-        localPort: intg.localPort,
-        healthUrl: intg.healthUrl,
-        localAiConfig: intg.localAiConfig,
-        aiderTip: intg.aiderTip,
-        installed,
-        running,
-        version,
-        pinned: state[intg.id]?.pinned || false,
-        updateAvailable: false,
-      };
-    })
-  );
+  return Promise.all(INTEGRATIONS.map(intg => integrationListEntry(intg, state, options)));
+}
+
+router.get("/integrations", async (_req, res) => {
+  const results = await listIntegrationToolSources();
   return res.json({ integrations: results });
 });
 
@@ -344,41 +671,64 @@ router.post("/integrations/:id/pin", async (req, res) => {
   const current = state[req.params.id] || {};
   state[req.params.id] = { ...current, pinned: !current.pinned };
   await saveState(state);
+  upsertIntegrationState(req.params.id, state[req.params.id]);
+  recordAuditEvent({ eventType: "integration", action: "pin", target: req.params.id, metadata: { pinned: state[req.params.id].pinned } });
   return res.json({ success: true, pinned: state[req.params.id].pinned });
 });
 
+function actionScopes(action: "install" | "start" | "update"): ToolPermissionScope[] {
+  if (action === "install") return ["commands", "network", "filesystem.write", "install"];
+  if (action === "update") return ["commands", "network", "filesystem.write", "update"];
+  return ["commands"];
+}
+
+function statusForToolResult(result: ToolCallResult): number {
+  if (result.status === "approval_required") return 202;
+  if (result.status === "not_configured") return 409;
+  if (result.status === "disabled" || result.status === "blocked" || result.status === "denied") return 403;
+  return result.success ? 200 : 409;
+}
+
+async function evaluateIntegrationAction(
+  integrationId: string,
+  action: "install" | "start" | "update",
+  body: Record<string, unknown>,
+): Promise<ToolCallResult | null> {
+  const intg = INTEGRATIONS.find((i) => i.id === integrationId);
+  if (!intg) return null;
+  const state = await loadState();
+  const source = await integrationListEntry(intg, state, { liveChecks: false, persist: false });
+  const tool = integrationSourceToTool(source);
+  return evaluateToolCall({
+    toolId: tool.id,
+    action,
+    requestedScopes: actionScopes(action),
+    input: {
+      integrationId: intg.id,
+      installMethod: intg.installMethod,
+      proposalOnly: true,
+    },
+    approvalId: typeof body["approvalId"] === "string" ? body["approvalId"] : undefined,
+    dryRun: body["dryRun"] === true,
+    sandboxSatisfied: body["sandboxSatisfied"] === true,
+    registry: [tool],
+  });
+}
+
 router.post("/integrations/:id/install", agentExecGuard((req) => `install integration ${req.params.id}`), async (req, res) => {
-  const intg = INTEGRATIONS.find((i) => i.id === req.params.id);
-  if (!intg) return res.status(404).json({ success: false, message: "Integration not found" });
-  try {
-    if (intg.installMethod === "pip") {
-      const pkg = intg.pipPackage || intg.id;
-      const cmd = isWindows
-        ? `start "Installing ${intg.name}" cmd /k "pip install ${pkg} && echo Done - you can close this window"`
-        : `x-terminal-emulator -e "pip install ${pkg}"`;
-      exec(cmd);
-      return res.json({ success: true, message: `Installing ${intg.name} via pip...` });
-    }
-    if (intg.installMethod === "winget" && isWindows) {
-      const id = intg.wingetId;
-      exec(`start "Installing ${intg.name}" cmd /k "winget install ${id} --accept-package-agreements --accept-source-agreements && echo Done"`);
-      return res.json({ success: true, message: `Installing ${intg.name} via winget...` });
-    }
-    if (intg.installMethod === "vscode") {
-      exec(intg.installCmd);
-      return res.json({ success: true, message: `Installing ${intg.name} VS Code extension...` });
-    }
-    return res.json({ success: true, message: `Manual install required. Command: ${intg.installCmd}`, manual: true, installCmd: intg.installCmd });
-  } catch (err: any) {
-    return res.json({ success: false, message: err.message });
-  }
+  const integrationId = String(req.params.id);
+  const result = await evaluateIntegrationAction(integrationId, "install", req.body ?? {});
+  if (!result) return res.status(404).json({ success: false, status: "not_configured", executed: false, message: "Integration not found" });
+  recordAuditEvent({ eventType: "integration", action: "install_proposal", target: integrationId, result: result.blocked ? "blocked" : "success", metadata: { toolStatus: result.status, executed: false } });
+  return res.status(statusForToolResult(result)).json(result);
 });
 
 router.post("/integrations/:id/start", agentExecGuard((req) => `start integration ${req.params.id}`), async (req, res) => {
-  const intg = INTEGRATIONS.find((i) => i.id === req.params.id);
-  if (!intg || !intg.startCmd) return res.status(404).json({ success: false, message: "Cannot start this integration" });
-  exec(isWindows ? intg.startCmd : `${intg.startCmd} >/dev/null 2>&1 &`);
-  return res.json({ success: true, message: `${intg.name} start command sent` });
+  const integrationId = String(req.params.id);
+  const result = await evaluateIntegrationAction(integrationId, "start", req.body ?? {});
+  if (!result) return res.status(404).json({ success: false, status: "not_configured", executed: false, message: "Cannot start this integration" });
+  recordAuditEvent({ eventType: "integration", action: "start_proposal", target: integrationId, result: result.blocked ? "blocked" : "success", metadata: { toolStatus: result.status, executed: false } });
+  return res.status(statusForToolResult(result)).json(result);
 });
 
 router.get("/integrations/updates", async (_req, res) => {
@@ -393,13 +743,11 @@ router.get("/integrations/updates", async (_req, res) => {
 });
 
 router.post("/integrations/:id/update", agentExecGuard((req) => `update integration ${req.params.id}`), async (req, res) => {
-  const intg = INTEGRATIONS.find((i) => i.id === req.params.id);
-  if (!intg) return res.status(404).json({ success: false, message: "Not found" });
-  const cmd = isWindows
-    ? `start "Updating ${intg.name}" cmd /k "${intg.updateCmd} && echo Done"`
-    : `x-terminal-emulator -e "${intg.updateCmd}"`;
-  exec(cmd);
-  return res.json({ success: true, message: `Updating ${intg.name}...` });
+  const integrationId = String(req.params.id);
+  const result = await evaluateIntegrationAction(integrationId, "update", req.body ?? {});
+  if (!result) return res.status(404).json({ success: false, status: "not_configured", executed: false, message: "Not found" });
+  recordAuditEvent({ eventType: "integration", action: "update_proposal", target: integrationId, result: result.blocked ? "blocked" : "success", metadata: { toolStatus: result.status, executed: false } });
+  return res.status(statusForToolResult(result)).json(result);
 });
 
 export default router;

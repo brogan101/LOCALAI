@@ -9,6 +9,12 @@ import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { getOllamaUrl } from "../lib/ollama-url.js";
 import { modelRolesService } from "../lib/model-roles-service.js";
 import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
+import {
+  createSelfImprovementProposal,
+  getSelfMaintainerSnapshot,
+  proposeSelfMaintainerAction,
+  runSelfMaintainerRadar,
+} from "../lib/self-maintainer.js";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -219,38 +225,72 @@ router.post("/updater/check", async (req, res) => {
   return res.json({ success: true, results, totalUpdates, checkedAt: manifest.generatedAt });
 });
 
+router.get("/updater/self-maintainer", async (_req, res) => {
+  return res.json(await getSelfMaintainerSnapshot());
+});
+
+router.post("/updater/self-maintainer/radar", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const snapshot = await runSelfMaintainerRadar({
+    dryRunOnly: body["dryRunOnly"] !== false,
+    includeNetworkChecks: body["includeNetworkChecks"] === true,
+  });
+  return res.status(snapshot.success ? 200 : 500).json(snapshot);
+});
+
+router.post("/updater/self-maintainer/proposals", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const request = typeof body["request"] === "string" ? body["request"].trim() : "";
+  const files = Array.isArray(body["files"])
+    ? body["files"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : undefined;
+  if (!request) return res.status(400).json({ success: false, message: "request is required" });
+  const result = await createSelfImprovementProposal({
+    request,
+    files,
+    dryRunOnly: body["dryRunOnly"] === true,
+  });
+  return res.status(result.approvalRequired ? 202 : 200).json(result);
+});
+
+router.post("/updater/self-maintainer/actions/propose", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const action = typeof body["action"] === "string" ? body["action"] as any : "stage";
+  const targetIds = Array.isArray(body["targetIds"])
+    ? body["targetIds"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : undefined;
+  const result = await proposeSelfMaintainerAction({
+    action,
+    targetIds,
+    dryRunOnly: body["dryRunOnly"] === true,
+    approvalId: typeof body["approvalId"] === "string" ? body["approvalId"] : undefined,
+    details: typeof body["details"] === "object" && body["details"] !== null ? body["details"] as Record<string, unknown> : undefined,
+  });
+  return res.status(result.status === "blocked" ? 423 : result.approvalRequired ? 202 : 200).json(result);
+});
+
 router.post("/updater/update", agentExecGuard("run updater"), async (req, res) => {
-  const { ids, type } = req.body;
-  if (!ids?.length) return res.status(400).json({ success: false, message: "ids required" });
-  const manifest = await loadManifest();
-  const states = await loadModelStates();
-  const launched: string[] = [];
-  for (const id of ids) {
-    const tool = manifest.systemTools[id];
-    if (tool) {
-      if (tool.wingetId) {
-        exec(`${isWindows ? `start "Updating ${id}" cmd /k "` : ""}winget upgrade --id ${tool.wingetId} --silent --accept-package-agreements --accept-source-agreements${isWindows ? '"' : " &"}`);
-        launched.push(id);
-      } else if (tool.pipName) {
-        exec(`${isWindows ? `start "Updating ${id}" cmd /k "` : ""}pip install --upgrade ${tool.pipName}${isWindows ? '"' : " &"}`);
-        launched.push(id);
-      }
-    }
-    const modelEntry = manifest.models[id];
-    if (modelEntry && states[id]) {
-      const snapshotId = modelEntry.installedDigest ? await snapshotModel(id, modelEntry.installedDigest) : undefined;
-      if (snapshotId) {
-        modelEntry.snapshotDigest = snapshotId;
-        states[id].snapshotDigest = snapshotId;
-        states[id].lifecycle = "updating";
-      }
-      exec(`ollama pull ${id}`);
-      launched.push(id);
-    }
-  }
-  await saveManifest(manifest);
-  await saveModelStates(states);
-  return res.json({ success: true, launched, message: `Update started for: ${launched.join(", ")}` });
+  const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+  const { ids, toolIds, type } = body;
+  const selectedIds = Array.isArray(ids) ? ids : Array.isArray(toolIds) ? toolIds : [];
+  if (!selectedIds.length) return res.status(400).json({ success: false, message: "ids required" });
+  const result = await proposeSelfMaintainerAction({
+    action: "stage",
+    targetIds: selectedIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
+    sourceKind: type === "model" ? "model" : "package_dependency",
+    dryRunOnly: false,
+    approvalId: typeof body["approvalId"] === "string" ? body["approvalId"] : undefined,
+    details: {
+      legacyRoute: "/updater/update",
+      noWingetPipOrOllamaCommandExecuted: true,
+      requestedType: type ?? "unknown",
+    },
+  });
+  return res.status(result.approvalRequired ? 202 : result.status === "blocked" ? 423 : 200).json({
+    ...result,
+    launched: [],
+    message: result.message,
+  });
 });
 
 router.post("/updater/rollback/:modelName", agentEditsGuard((req) => `prepare rollback for model ${String(req.params.modelName)}`), async (req, res) => {

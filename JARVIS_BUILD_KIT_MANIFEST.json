@@ -1,0 +1,16 @@
+{
+  "name": "LOCALAI Jarvis Build Kit",
+  "version": "2.6",
+  "base_repo": "brogan101/LOCALAI",
+  "purpose": "drop-in Codex/local-AI phase prompt kit for building Jarvis Control Center on the existing LOCALAI project",
+  "preserves_prior_scope": true,
+  "new_in_v2_6": [
+    "full external project/GitHub watchlist including Text-to-CAD repos",
+    "expert-mode contracts including Master Tech and Master Fabricator",
+    "strengthened Phase 13B for FreeCAD/Text-to-CAD/CAD-as-code/KiCad",
+    "strengthened Phase 18 for Master Tech diagnostics",
+    "verification checks for no scope removal and no fake success paths"
+  ],
+  "required_start_prompt": "prompts/RUN_PHASE_00_NOW.md",
+  "verify_command": "node scripts/jarvis/verify-build-kit.mjs"
+}

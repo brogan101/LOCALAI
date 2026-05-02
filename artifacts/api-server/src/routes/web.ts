@@ -7,7 +7,7 @@
  * POST /web/fetch  { url: string }
  *   → { markdown: string }
  *
- * SearxNG probe: GET http://localhost:8888/search?q=test&format=json
+ * SearxNG probe: GET http://127.0.0.1:8888/search?q=test&format=json
  * Fallback: scrape DuckDuckGo HTML with cheerio
  */
 
@@ -16,7 +16,7 @@ import { thoughtLog } from "../lib/thought-log.js";
 
 const router = Router();
 
-const SEARXNG_BASE   = "http://localhost:8888";
+const SEARXNG_BASE   = "http://127.0.0.1:8888";
 const SEARXNG_TIMEOUT = 4000;
 const FETCH_TIMEOUT   = 10_000;
 

@@ -7,6 +7,7 @@ export type ThoughtLevel = "debug" | "info" | "warning" | "error";
 export type ThoughtCategory =
   | "kernel"
   | "queue"
+  | "approval"
   | "rollback"
   | "config"
   | "chat"
@@ -14,9 +15,13 @@ export type ThoughtCategory =
   | "system"
   | "security"
   | "rag"
+  | "evidence_vault"
   | "stt"
   | "tts"
-  | "web";
+  | "web"
+  | "voice"
+  | "meeting"
+  | "screen_context";
 
 export interface ThoughtEntry {
   id: string;

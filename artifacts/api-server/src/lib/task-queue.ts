@@ -4,7 +4,7 @@ import { logger } from "./logger.js";
 import { thoughtLog } from "./thought-log.js";
 import { stateOrchestrator } from "./state-orchestrator.js";
 
-export type JobStatus = "queued" | "running" | "completed" | "failed";
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "paused" | "cancelled";
 
 export interface AsyncJob {
   id: string;
@@ -125,6 +125,65 @@ class AsyncTaskQueue {
 
   getJob(jobId: string): AsyncJob | null {
     return this.jobs.get(jobId) ?? null;
+  }
+
+  pauseQueuedJobs(predicate: (job: AsyncJob) => boolean, reason: string): AsyncJob[] {
+    const paused: AsyncJob[] = [];
+    const remaining: Array<{ job: AsyncJob; handler: JobHandler }> = [];
+
+    for (const entry of this.queue) {
+      if (entry.job.status === "queued" && predicate(entry.job)) {
+        entry.job.status = "paused";
+        entry.job.finishedAt = new Date().toISOString();
+        entry.job.message = reason;
+        entry.job.error = reason;
+        this.updateJob(entry.job);
+        paused.push(entry.job);
+        continue;
+      }
+      remaining.push(entry);
+    }
+
+    this.queue = remaining;
+    if (paused.length > 0) {
+      thoughtLog.publish({
+        category: "queue",
+        title:    "Queued Tasks Paused",
+        message:  `${paused.length} queued task(s) paused: ${reason}`,
+        metadata: { jobIds: paused.map(job => job.id) },
+      });
+    }
+    return paused;
+  }
+
+  cancelQueuedJobs(reason: string): AsyncJob[] {
+    const cancelled: AsyncJob[] = [];
+    const remaining: Array<{ job: AsyncJob; handler: JobHandler }> = [];
+
+    for (const entry of this.queue) {
+      if (entry.job.status === "queued") {
+        entry.job.status = "cancelled";
+        entry.job.finishedAt = new Date().toISOString();
+        entry.job.message = reason;
+        entry.job.error = reason;
+        this.updateJob(entry.job);
+        cancelled.push(entry.job);
+        continue;
+      }
+      remaining.push(entry);
+    }
+
+    this.queue = remaining;
+    if (cancelled.length > 0) {
+      thoughtLog.publish({
+        level:    "warning",
+        category: "queue",
+        title:    "Queued Tasks Cancelled",
+        message:  `${cancelled.length} queued task(s) cancelled: ${reason}`,
+        metadata: { jobIds: cancelled.map(job => job.id) },
+      });
+    }
+    return cancelled;
   }
 
   /**

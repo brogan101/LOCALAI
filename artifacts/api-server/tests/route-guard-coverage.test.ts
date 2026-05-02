@@ -24,6 +24,16 @@ const expectations: RouteGuardExpectation[] = [
     ],
   },
   {
+    file: "routes/plugins.ts",
+    snippets: [
+      `router.put("/tools/docker-mcp/profile", agentEditsGuard("update Docker MCP Gateway profile")`,
+      `router.put("/tools/claw-gateway/profile", agentEditsGuard("update OpenClaw/NemoClaw gateway profile")`,
+      `router.post("/tools/claw-gateway/skills/review", agentEditsGuard("review OpenClaw/NemoClaw gateway skill")`,
+      `router.put("/tools/:id/enabled", agentEditsGuard`,
+      `router.post("/tools/:id/execute", agentExecGuard`,
+    ],
+  },
+  {
     file: "routes/stack.ts",
     snippets: [
       `router.post("/stack/components/:componentId/start", agentExecGuard`,

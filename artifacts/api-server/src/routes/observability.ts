@@ -1,5 +1,10 @@
 import { Router } from "express";
 import { thoughtLog, type ThoughtLevel, type ThoughtCategory } from "../lib/thought-log.js";
+import {
+  getMissionReplaySourceOfTruth,
+  listMissionReplayEvents,
+  runLocalJarvisEvals,
+} from "../lib/mission-replay.js";
 
 const router = Router();
 
@@ -7,11 +12,17 @@ const THOUGHT_LEVELS: ThoughtLevel[] = ["debug", "info", "warning", "error"];
 const THOUGHT_CATEGORIES: ThoughtCategory[] = [
   "kernel",
   "queue",
+  "approval",
   "rollback",
   "config",
   "chat",
   "workspace",
   "system",
+  "security",
+  "rag",
+  "stt",
+  "tts",
+  "web",
 ];
 
 router.get("/observability/thoughts", async (req, res) => {
@@ -21,6 +32,44 @@ router.get("/observability/thoughts", async (req, res) => {
 
 router.get("/observability/thoughts/stream", async (_req, res) => {
   thoughtLog.stream(res);
+});
+
+router.get("/observability/mission-replay", async (req, res) => {
+  const traceId = typeof req.query["traceId"] === "string" && req.query["traceId"].trim()
+    ? req.query["traceId"].trim()
+    : undefined;
+  const limit = Math.max(1, Math.min(Number(req.query["limit"]) || 200, 1000));
+  return res.json({ success: true, replay: listMissionReplayEvents({ traceId, limit }) });
+});
+
+router.get("/mission-replay/:traceId", async (req, res) => {
+  const traceId = req.params["traceId"]!;
+  const limit = Math.max(1, Math.min(Number(req.query["limit"]) || 200, 1000));
+  const replay = listMissionReplayEvents({ traceId, limit });
+  return res.json({ success: true, replay });
+});
+
+router.get("/observability/evals", async (_req, res) => {
+  return res.json({
+    success: true,
+    localOnly: true,
+    networkUsed: false,
+    externalProvidersRequired: false,
+    suites: [
+      "local_chat_model_routing",
+      "approval_denial",
+      "job_failure",
+      "tool_blocking",
+      "mission_replay_event_integrity",
+      "secret_redaction",
+    ],
+    sourceOfTruth: getMissionReplaySourceOfTruth(),
+  });
+});
+
+router.post("/observability/evals/run", async (_req, res) => {
+  const report = runLocalJarvisEvals();
+  return res.status(report.success ? 200 : 500).json({ success: report.success, report });
 });
 
 router.post("/observability/thoughts", async (req, res) => {

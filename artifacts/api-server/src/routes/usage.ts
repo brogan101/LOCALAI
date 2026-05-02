@@ -66,19 +66,31 @@ async function upsertUsageMetric(
   date: string,
   tokensIn: number,
   tokensOut: number,
+  providerKind: "local" | "cloud",
+  costEstimateUsd?: number | null,
 ): Promise<void> {
   try {
     const { sqlite } = await import("../db/database.js");
-    const costIn  = tokensIn  * CLAUDE_COST_PER_INPUT_TOKEN;
-    const costOut = tokensOut * CLAUDE_COST_PER_OUTPUT_TOKEN;
+    const fallbackCostIn  = tokensIn  * CLAUDE_COST_PER_INPUT_TOKEN;
+    const fallbackCostOut = tokensOut * CLAUDE_COST_PER_OUTPUT_TOKEN;
+    const cost = providerKind === "local" ? 0 : costEstimateUsd ?? fallbackCostIn + fallbackCostOut;
+    const localTokens = providerKind === "local" ? tokensIn + tokensOut : 0;
+    const cloudTokens = providerKind === "cloud" ? tokensIn + tokensOut : 0;
+    const localCost = providerKind === "local" ? 0 : 0;
+    const cloudCost = providerKind === "cloud" ? cost : 0;
     sqlite.prepare(`
-      INSERT INTO usage_metrics (date, tokens_in, tokens_out, cost_estimate_usd)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO usage_metrics
+        (date, tokens_in, tokens_out, cost_estimate_usd, local_tokens, cloud_tokens, local_cost_usd, cloud_cost_usd)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(date) DO UPDATE SET
         tokens_in         = tokens_in         + excluded.tokens_in,
         tokens_out        = tokens_out        + excluded.tokens_out,
-        cost_estimate_usd = cost_estimate_usd + excluded.cost_estimate_usd
-    `).run(date, tokensIn, tokensOut, costIn + costOut);
+        cost_estimate_usd = cost_estimate_usd + excluded.cost_estimate_usd,
+        local_tokens      = local_tokens      + excluded.local_tokens,
+        cloud_tokens      = cloud_tokens      + excluded.cloud_tokens,
+        local_cost_usd    = local_cost_usd    + excluded.local_cost_usd,
+        cloud_cost_usd    = cloud_cost_usd    + excluded.cloud_cost_usd
+    `).run(date, tokensIn, tokensOut, cost, localTokens, cloudTokens, localCost, cloudCost);
   } catch { /* non-fatal */ }
 }
 
@@ -90,9 +102,13 @@ router.post("/usage/record", async (req, res) => {
     inputText, outputText,
     inputTokens: rawIn, outputTokens: rawOut,
     durationMs = 0, sessionId,
+    providerKind: rawProviderKind,
+    costEstimateUsd: rawCostEstimateUsd,
   } = req.body;
   if (!model) return res.status(400).json({ success: false, message: "model required" });
 
+  const providerKind: "local" | "cloud" = rawProviderKind === "cloud" ? "cloud" : "local";
+  const costEstimateUsd = typeof rawCostEstimateUsd === "number" ? rawCostEstimateUsd : providerKind === "local" ? 0 : null;
   const inputTokens  = rawIn  ?? (inputText  ? estimateTokens(inputText)  : 0);
   const outputTokens = rawOut ?? (outputText ? estimateTokens(outputText) : 0);
   const totalTokens  = inputTokens + outputTokens;
@@ -105,6 +121,14 @@ router.post("/usage/record", async (req, res) => {
   if (!day.byModel[model]) {
     day.byModel[model] = { tokens: 0, requests: 0, avgMs: 0, inputTokens: 0, outputTokens: 0 };
   }
+  day.byProvider ||= {
+    local: { tokens: 0, requests: 0, costEstimateUsd: 0 },
+    cloud: { tokens: 0, requests: 0, costEstimateUsd: 0 },
+  };
+  day.byProvider[providerKind] ||= { tokens: 0, requests: 0, costEstimateUsd: 0 };
+  day.byProvider[providerKind].tokens += totalTokens;
+  day.byProvider[providerKind].requests += 1;
+  day.byProvider[providerKind].costEstimateUsd += costEstimateUsd ?? 0;
   const m = day.byModel[model];
   m.tokens        += totalTokens;
   m.inputTokens    = (m.inputTokens  || 0) + inputTokens;
@@ -131,7 +155,7 @@ router.post("/usage/record", async (req, res) => {
   await saveDay(day);
 
   // Write-through to SQLite usage_metrics
-  void upsertUsageMetric(today, inputTokens, outputTokens);
+  void upsertUsageMetric(today, inputTokens, outputTokens, providerKind, costEstimateUsd);
 
   const settings = await loadAppSettings();
   const limitHit = settings.dailyTokenLimit > 0 && day.totalTokens >= settings.dailyTokenLimit;
@@ -145,6 +169,8 @@ router.post("/usage/record", async (req, res) => {
     limitHit,
     warnHit,
     remainingToday: Math.max(0, settings.dailyTokenLimit - day.totalTokens),
+    providerKind,
+    costEstimateUsd,
   });
 });
 
@@ -158,6 +184,10 @@ router.get("/usage/today", async (_req, res) => {
   return res.json({
     ...day,
     topModels,
+    byProvider: day.byProvider ?? {
+      local: { tokens: day.totalTokens ?? 0, requests: day.totalRequests ?? 0, costEstimateUsd: 0 },
+      cloud: { tokens: 0, requests: 0, costEstimateUsd: 0 },
+    },
     limitHit: settings.dailyTokenLimit > 0 && day.totalTokens >= settings.dailyTokenLimit,
     warnHit:  settings.tokenWarningThreshold > 0 && day.totalTokens >= settings.tokenWarningThreshold,
     dailyLimit:         settings.dailyTokenLimit,
@@ -184,7 +214,17 @@ router.get("/usage/history", async (req, res) => {
     ? nonZero.reduce((a, b) => (a.totalTokens > b.totalTokens ? a : b))
     : null;
   const allModels: Record<string, number> = {};
+  const byProvider = {
+    local: { tokens: 0, requests: 0, costEstimateUsd: 0 },
+    cloud: { tokens: 0, requests: 0, costEstimateUsd: 0 },
+  };
   for (const day of history) {
+    const providers = day.byProvider ?? {};
+    for (const kind of ["local", "cloud"] as const) {
+      byProvider[kind].tokens += providers[kind]?.tokens ?? 0;
+      byProvider[kind].requests += providers[kind]?.requests ?? 0;
+      byProvider[kind].costEstimateUsd += providers[kind]?.costEstimateUsd ?? 0;
+    }
     for (const [name, stats] of Object.entries(day.byModel)) {
       allModels[name] = (allModels[name] || 0) + (stats as any).tokens;
     }
@@ -198,6 +238,7 @@ router.get("/usage/history", async (req, res) => {
     averageDailyTokens: days > 0 ? Math.round(totalTokens / days) : 0,
     peakDay: peakDay ? { date: peakDay.date, tokens: peakDay.totalTokens } : null,
     topModel: topModel ? { name: topModel[0], tokens: topModel[1] } : null,
+    byProvider,
   });
 });
 
@@ -218,12 +259,20 @@ router.get("/usage/lifetime", async (_req, res) => {
         SUM(tokens_in)         AS totalIn,
         SUM(tokens_out)        AS totalOut,
         SUM(cost_estimate_usd) AS totalCost,
+        SUM(local_tokens)      AS localTokens,
+        SUM(cloud_tokens)      AS cloudTokens,
+        SUM(local_cost_usd)    AS localCost,
+        SUM(cloud_cost_usd)    AS cloudCost,
         MIN(date)              AS firstDate
       FROM usage_metrics
     `).get() as {
       totalIn: number | null;
       totalOut: number | null;
       totalCost: number | null;
+      localTokens: number | null;
+      cloudTokens: number | null;
+      localCost: number | null;
+      cloudCost: number | null;
       firstDate: string | null;
     } | undefined;
 
@@ -263,6 +312,16 @@ router.get("/usage/lifetime", async (_req, res) => {
       totalTokensOut:     effectiveOut,
       totalTokens:        effectiveIn + effectiveOut,
       costEstimateUsd:    parseFloat(effectiveCost.toFixed(4)),
+      byProvider: {
+        local: {
+          tokens: row?.localTokens ?? effectiveIn + effectiveOut,
+          costEstimateUsd: row?.localCost ?? 0,
+        },
+        cloud: {
+          tokens: row?.cloudTokens ?? 0,
+          costEstimateUsd: row?.cloudCost ?? 0,
+        },
+      },
       firstDate,
       pricing: {
         inputPer1M:  3,

@@ -3,6 +3,7 @@ import path from "path";
 import { readFile, readdir, stat } from "fs/promises";
 import { existsSync } from "fs";
 import os from "os";
+import { assertPathAllowed } from "../lib/platform-foundation.js";
 
 const router = Router();
 const HOME = os.homedir();
@@ -26,6 +27,8 @@ async function listDir(dirPath: string): Promise<FsEntry[]> {
 
 router.get("/filebrowser/list", async (req, res) => {
   const dirPath = typeof req.query["path"] === "string" ? req.query["path"] as string : HOME;
+  const decision = assertPathAllowed(dirPath, "file.read");
+  if (!decision.allowed) return res.status(403).json({ success: false, blocked: true, message: decision.reason, decision });
   if (!existsSync(dirPath)) return res.status(404).json({ success: false, message: "Path not found" });
   try {
     return res.json({ success: true, path: dirPath, entries: await listDir(dirPath) });
@@ -34,6 +37,8 @@ router.get("/filebrowser/list", async (req, res) => {
 
 router.get("/filebrowser/read", async (req, res) => {
   const filePath = typeof req.query["path"] === "string" ? req.query["path"] as string : "";
+  const decision = filePath ? assertPathAllowed(filePath, "file.read") : null;
+  if (decision && !decision.allowed) return res.status(403).json({ success: false, blocked: true, message: decision.reason, decision });
   if (!filePath || !existsSync(filePath)) return res.status(404).json({ success: false, message: "File not found" });
   try {
     const s = await stat(filePath);
