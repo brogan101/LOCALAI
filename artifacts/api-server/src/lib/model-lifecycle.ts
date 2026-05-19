@@ -12,7 +12,7 @@ import { getUniversalGatewayTags, type GatewayModel, type GatewayTagsResult } fr
 import { modelRolesService } from "./model-roles-service.js";
 import { recordAuditEvent } from "./platform-foundation.js";
 import { thoughtLog } from "./thought-log.js";
-import { USER_STACK, type ModelRole } from "../config/models.config.js";
+import { USER_STACK } from "../config/models.config.js";
 
 export type ModelLifecycleAction =
   | "pull"

@@ -86,15 +86,31 @@ export const USER_STACK: ModelSpec[] = [
     runtimeClass:       "medium",
   },
   {
+    // RTX 5070 (12 GB VRAM) fix: qwen2.5-coder:14b ~9 GB fits with headroom.
+    // qwen3-coder:30b (19 GB) was OOM and ran at 1-3 tok/s via RAM offload.
     role:               "primary-coding",
+    name:               "qwen2.5-coder:14b",
+    pullString:         "ollama pull qwen2.5-coder:14b",
+    installMethod:      "ollama",
+    vramBytes:          9 * GB,
+    minVramBytes:       8 * GB,
+    preferredVramBytes: 10 * GB,
+    modality:           "text",
+    purpose:            "Primary code generation, multi-file edits, large codebase navigation. Best balance for RTX 5070.",
+    quant:              "Q4_K_M",
+    runtimeClass:       "medium",
+  },
+  {
+    // Opt-in only — will partially offload to RAM on 12 GB card (slow)
+    role:               "heavy-experimental-coding" as any,
     name:               "qwen3-coder:30b",
     pullString:         "ollama pull qwen3-coder:30b",
     installMethod:      "ollama",
     vramBytes:          19 * GB,
     minVramBytes:       12 * GB,
-    preferredVramBytes: 20 * GB,
+    preferredVramBytes: 24 * GB,
     modality:           "text",
-    purpose:            "Primary code generation, multi-file edits, large codebase navigation",
+    purpose:            "Max-quality coding. Offloads to RAM on RTX 5070 — slow but capable.",
     quant:              "Q4_K_M",
     runtimeClass:       "large",
   },

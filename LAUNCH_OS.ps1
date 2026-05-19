@@ -52,7 +52,7 @@ function Test-LocalUrl {
 }
 
 function Wait-LocalUrl {
-    param([string]$Name, [string]$Url, [int]$Seconds = 25)
+    param([string]$Name, [string]$Url, [int]$Seconds = 45)
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-LocalUrl -Url $Url -TimeoutSec 2) {
@@ -216,19 +216,33 @@ if ($CheckOnly) {
     exit 0
 }
 
+# ── 5a. First-run detection — install node_modules if missing ─────────────────
+$nodeModulesPath = Join-Path $PSScriptRoot "artifacts\api-server\node_modules"
+if (-not (Test-Path $nodeModulesPath)) {
+    Write-Host "First run detected — node_modules missing. Running pnpm install..." -ForegroundColor Yellow
+    Push-Location $PSScriptRoot
+    pnpm install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "pnpm install failed. Fix the error above and re-run LAUNCH_OS.ps1." -ForegroundColor Red
+        exit 1
+    }
+    Pop-Location
+    Write-Host "Install complete." -ForegroundColor Green
+}
+
 # ── 5. Launch backend ─────────────────────────────────────────────────────────
 Write-Step "Starting API server (port 3001)..." Cyan
 $backendDir = Join-Path $root "artifacts\api-server"
 $apiLog = Join-Path $logsRoot "api-server.launch.log"
 $apiProc = Start-LocalAIService -Name "LocalAI API" -Directory $backendDir -Command "pnpm run dev" -LogFile $apiLog
-if (-not $NoWait) { $apiOnline = Wait-LocalUrl -Name "API Server" -Url "http://127.0.0.1:3001/api/health" -Seconds 25 } else { $apiOnline = $false }
+if (-not $NoWait) { $apiOnline = Wait-LocalUrl -Name "API Server" -Url "http://127.0.0.1:3001/api/health" -Seconds 45 } else { $apiOnline = $false }
 
 # ── 6. Launch frontend ────────────────────────────────────────────────────────
 Write-Step "Starting Control Center (port 5173)..." Cyan
 $frontendDir = Join-Path $root "artifacts\localai-control-center"
 $uiLog = Join-Path $logsRoot "ui-dev.launch.log"
 $uiProc = Start-LocalAIService -Name "LocalAI Control Center" -Directory $frontendDir -Command "pnpm run dev -- --host 127.0.0.1" -LogFile $uiLog
-if (-not $NoWait) { $uiOnline = Wait-LocalUrl -Name "Control Center" -Url "http://127.0.0.1:5173" -Seconds 25 } else { $uiOnline = $false }
+if (-not $NoWait) { $uiOnline = Wait-LocalUrl -Name "Control Center" -Url "http://127.0.0.1:5173" -Seconds 45 } else { $uiOnline = $false }
 
 # ── 7. Status table ──────────────────────────────────────────────────────────
 Write-Host ""

@@ -16,8 +16,7 @@
 
 import { execFile as cpExecFile } from "child_process";
 import { promisify } from "util";
-import { existsSync } from "fs";
-import { readFile, writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir } from "fs/promises";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";

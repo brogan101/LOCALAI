@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Route, Switch, Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -27,11 +27,17 @@ import {
   Boxes,
   PackageSearch,
   Car,
+  History,
+  ListChecks,
+  MonitorCheck,
 } from "lucide-react";
 import api from "./api.js";
 
 // ── Pages ─────────────────────────────────────────────────────────────────────
 const Dashboard = lazy(() => import("./pages/Dashboard.js"));
+const SetupPage         = lazy(() => import("./pages/Setup.js"));
+const ProjectForemanPage = lazy(() => import("./pages/ProjectForeman.js"));
+const MissionReplayPage  = lazy(() => import("./pages/MissionReplay.js"));
 const ChatPage = lazy(() => import("./pages/Chat.js"));
 const ModelsPage = lazy(() => import("./pages/Models.js"));
 const DiagnosticsPage = lazy(() => import("./pages/Diagnostics.js"));
@@ -51,6 +57,7 @@ const HomeLabPage = lazy(() => import("./pages/HomeLab.js"));
 const DigitalTwinPage = lazy(() => import("./pages/DigitalTwin.js"));
 const InventoryPage = lazy(() => import("./pages/Inventory.js"));
 const AutomotivePage = lazy(() => import("./pages/Automotive.js"));
+const HardwarePage = lazy(() => import("./pages/Hardware.js"));
 
 function Placeholder({ title, description }: { title: string; description?: string }) {
   return (
@@ -78,68 +85,35 @@ function PageLoading() {
 
 // ── Nav config ────────────────────────────────────────────────────────────────
 
-// Grouped nav — section labels organize the 20 pages into readable clusters.
+// Grouped nav — Core items always visible, Advanced groups collapsible.
 // Routes are preserved exactly; only the sidebar rendering is changed.
 
 type NavItem = { path: string; label: string; icon: React.ElementType };
 
-const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
+const CORE_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
   {
     items: [
-      { path: "/",    label: "Dashboard", icon: LayoutDashboard },
-      { path: "/chat", label: "Chat",     icon: MessageSquare },
+      { path: "/",      label: "Dashboard", icon: LayoutDashboard },
+      { path: "/setup", label: "Setup",     icon: Wrench },
+      { path: "/chat",  label: "Chat",      icon: MessageSquare },
     ],
   },
   {
-    label: "Models / Providers",
+    label: "Models",
     items: [
-      { path: "/models",    label: "Models",    icon: Cpu },
-      { path: "/workspace", label: "Workspace", icon: Folder },
-    ],
-  },
-  {
-    label: "Studios",
-    items: [
-      { path: "/studios", label: "Studios", icon: Zap },
-    ],
-  },
-  {
-    label: "Automation / Tools",
-    items: [
-      { path: "/integrations", label: "Integrations", icon: Plug },
-      { path: "/voice",        label: "Voice",        icon: Mic },
-      { path: "/remote",       label: "Remote",       icon: Radio },
-    ],
-  },
-  {
-    label: "Knowledge",
-    items: [
-      { path: "/evidence",    label: "Evidence",     icon: Archive },
-      { path: "/inventory",   label: "Inventory",    icon: PackageSearch },
-      { path: "/digital-twin", label: "Digital Twin", icon: Boxes },
-      { path: "/automotive",  label: "Automotive",   icon: Car },
-    ],
-  },
-  {
-    label: "HomeLab / Network",
-    items: [
-      { path: "/homelab", label: "HomeLab", icon: Network },
-    ],
-  },
-  {
-    label: "Business / IT",
-    items: [
-      { path: "/business",   label: "Business",   icon: BriefcaseBusiness },
-      { path: "/it-support", label: "IT Support", icon: ShieldAlert },
+      { path: "/models",          label: "Models",          icon: Cpu },
+      { path: "/hardware",        label: "Hardware",        icon: MonitorCheck },
+      { path: "/workspace",       label: "Workspace",       icon: Folder },
+      { path: "/project-foreman", label: "Project Foreman", icon: ListChecks },
     ],
   },
   {
     label: "Operations",
     items: [
-      { path: "/operations",  label: "Operations",  icon: Server },
-      { path: "/diagnostics", label: "Diagnostics", icon: Activity },
-      { path: "/logs",        label: "Logs",        icon: ScrollText },
-      { path: "/cleanup",     label: "Cleanup",     icon: Wrench },
+      { path: "/operations",     label: "Operations",      icon: Server },
+      { path: "/diagnostics",    label: "Diagnostics",     icon: Activity },
+      { path: "/logs",           label: "Logs",            icon: ScrollText },
+      { path: "/mission-replay", label: "Mission Replay",  icon: History },
     ],
   },
   {
@@ -149,8 +123,39 @@ const NAV_GROUPS: Array<{ label?: string; items: NavItem[] }> = [
   },
 ];
 
-// Flat list used only for active-path matching in the Sidebar
-const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap(g => g.items);
+const ADVANCED_GROUPS: Array<{ label: string; items: NavItem[] }> = [
+  {
+    label: "Studios / Tools",
+    items: [
+      { path: "/studios",      label: "Studios",      icon: Zap },
+      { path: "/integrations", label: "Integrations", icon: Plug },
+      { path: "/voice",        label: "Voice",        icon: Mic },
+      { path: "/remote",       label: "Remote",       icon: Radio },
+      { path: "/cleanup",      label: "Cleanup",      icon: Wrench },
+    ],
+  },
+  {
+    label: "Knowledge / Data",
+    items: [
+      { path: "/evidence",     label: "Evidence",     icon: Archive },
+      { path: "/inventory",    label: "Inventory",    icon: PackageSearch },
+      { path: "/digital-twin", label: "Digital Twin", icon: Boxes },
+      { path: "/automotive",   label: "Automotive",   icon: Car },
+    ],
+  },
+  {
+    label: "HomeLab / Business",
+    items: [
+      { path: "/homelab",    label: "HomeLab",    icon: Network },
+      { path: "/business",   label: "Business",   icon: BriefcaseBusiness },
+      { path: "/it-support", label: "IT Support", icon: ShieldAlert },
+    ],
+  },
+];
+
+const NAV_GROUPS = [...CORE_GROUPS, ...ADVANCED_GROUPS];
+
+
 
 // ── Status bar (top-right corner of sidebar) ──────────────────────────────────
 
@@ -186,6 +191,73 @@ function SidebarStatus() {
   );
 }
 
+// ── Advanced nav — collapsible section shown below core items ────────────────
+
+function AdvancedNav({ currentLocation }: { currentLocation: string }) {
+  const advancedPaths = ADVANCED_GROUPS.flatMap(g => g.items.map(i => i.path));
+  const anyActive = advancedPaths.some(p => currentLocation.startsWith(p));
+  // Start expanded if we're already on an advanced page
+  const [open, setOpen] = useState(anyActive);
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors"
+        style={{
+          color: "var(--color-muted)",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          opacity: 0.6,
+          letterSpacing: "0.07em",
+        }}
+      >
+        <span style={{ flex: 1, textAlign: "left" }}>Advanced</span>
+        <ChevronRight
+          size={11}
+          style={{
+            transform: open ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 0.2s",
+            flexShrink: 0,
+          }}
+        />
+      </button>
+
+      {open && ADVANCED_GROUPS.map((group, gi) => (
+        <div key={gi} className="mt-1">
+          <div className="px-3 pt-1 pb-0.5 text-xs font-semibold uppercase tracking-wider select-none"
+            style={{ color: "var(--color-muted)", opacity: 0.45, letterSpacing: "0.07em" }}>
+            {group.label}
+          </div>
+          {group.items.map(({ path, label, icon: Icon }) => {
+            const active = currentLocation.startsWith(path);
+            return (
+              <Link
+                key={path}
+                href={path}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg mb-0.5 text-sm transition-colors cursor-pointer"
+                style={{
+                  display: "flex",
+                  background: active ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : "transparent",
+                  color: active ? "var(--color-foreground)" : "var(--color-muted)",
+                  fontWeight: active ? 500 : 400,
+                  textDecoration: "none",
+                }}
+              >
+                <Icon size={15} style={{ color: active ? "var(--color-accent)" : "inherit", flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>{label}</span>
+                {active && <ChevronRight size={12} style={{ color: "var(--color-accent)" }} />}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 function Sidebar() {
@@ -216,9 +288,9 @@ function Sidebar() {
         </div>
       </div>
 
-      {/* Nav links — grouped with section labels */}
+      {/* Nav links — Core always visible, Advanced collapsible */}
       <nav className="flex-1 overflow-y-auto py-2 px-2">
-        {NAV_GROUPS.map((group, gi) => (
+        {CORE_GROUPS.map((group, gi) => (
           <div key={gi} className={gi > 0 ? "mt-1" : ""}>
             {group.label && (
               <div
@@ -245,19 +317,17 @@ function Sidebar() {
                     textDecoration: "none",
                   }}
                 >
-                  <Icon
-                    size={15}
-                    style={{ color: active ? "var(--color-accent)" : "inherit", flexShrink: 0 }}
-                  />
+                  <Icon size={15} style={{ color: active ? "var(--color-accent)" : "inherit", flexShrink: 0 }} />
                   <span style={{ flex: 1 }}>{label}</span>
-                  {active && (
-                    <ChevronRight size={12} style={{ color: "var(--color-accent)" }} />
-                  )}
+                  {active && <ChevronRight size={12} style={{ color: "var(--color-accent)" }} />}
                 </Link>
               );
             })}
           </div>
         ))}
+
+        {/* Advanced section — collapsible */}
+        <AdvancedNav currentLocation={location} />
       </nav>
 
       {/* Bottom status */}
@@ -353,6 +423,9 @@ function AppShell() {
         <Suspense fallback={<PageLoading />}>
           <Switch>
             <Route path="/" component={Dashboard} />
+            <Route path="/setup" component={SetupPage} />
+            <Route path="/project-foreman" component={ProjectForemanPage} />
+            <Route path="/mission-replay" component={MissionReplayPage} />
             <Route path="/chat" component={ChatPage} />
             <Route path="/models" component={ModelsPage} />
             <Route path="/workspace" component={WorkspacePage} />
@@ -371,6 +444,7 @@ function AppShell() {
             <Route path="/digital-twin" component={DigitalTwinPage} />
             <Route path="/inventory" component={InventoryPage} />
             <Route path="/automotive" component={AutomotivePage} />
+            <Route path="/hardware" component={HardwarePage} />
             <Route path="/settings" component={SettingsPage} />
             <Route>
               <Placeholder title="404 — Page Not Found" description="This route does not exist." />

@@ -527,6 +527,7 @@ export const models = {
   stop:          (modelName: string, approvalId?: string) => post<{ success: boolean; message: string; approvalRequired?: true; approval?: ApprovalRequest; proposal?: ModelLifecycleProposal }>("/models/stop", { modelName, approvalId }),
   delete:        (modelName: string, approvalId?: string) => del<{ success: boolean; message: string; approvalRequired?: true; approval?: ApprovalRequest; proposal?: ModelLifecycleProposal }>(`/models/${encodeURIComponent(modelName)}/delete`, { approvalId }),
   pullStatus:    () => get<{ jobs: Array<{ modelName: string; status: string; progress: number; message: string; jobId: string }> }>("/models/pull-status"),
+  streamPullProgress: () => new EventSource(`${BASE}/models/pull-progress/stream`),
   roles:         () => get<{ roles: Array<{ role: string; label: string; description: string; assignedModel: string; isValid: boolean; warning?: string }>; installedModels: string[]; popularModels: unknown[] }>("/models/roles"),
   setRoles:      (roles: Array<{ role: string; model: string }>) => put("/models/roles", { roles }),
   catalog:       () => get<{ catalog: unknown[] }>("/models/catalog"),
@@ -3246,8 +3247,52 @@ export interface HardwareSnapshot {
   probedAt: string;
 }
 
+// ── Hardware Intelligence (Phase 25) ─────────────────────────────────────────
+export interface GpuInfo {
+  name: string;
+  totalVram: number;          // bytes
+  usedVram: number;           // bytes
+  freeVram: number;           // bytes
+  temperature?: number;       // °C
+  utilization?: number;       // 0–100%
+  driverVersion?: string;
+  source: "nvidia-smi" | "proc" | "estimate";
+}
+
+export interface QuantRecommendation {
+  level: string;
+  vramBytes: number;
+  fits: boolean;
+  quality: "excellent" | "good" | "acceptable" | "degraded";
+  reasoning: string;
+}
+
+export interface ModelRanking {
+  model: { name: string; role: string; vramBytes: number; pullString: string };
+  score: number;
+  fits: boolean;
+  fitsWithOffload: boolean;
+  headroomBytes: number;
+  recommendation: QuantRecommendation;
+  alternatives: QuantRecommendation[];
+  explanation: string;
+  warning?: string;
+}
+
+export interface HardwareIntelligenceReport {
+  gpu: GpuInfo;
+  rankedModels: ModelRanking[];
+  recommendedStack: string[];
+  systemRam: number;
+  timestamp: string;
+  warnings: string[];
+}
+
 export const hardware = {
-  probe: () => get<HardwareSnapshot>("/system/hardware"),
+  probe:        () => get<HardwareSnapshot>("/system/hardware"),
+  intelligence: () => get<{ success: boolean } & HardwareIntelligenceReport>("/hardware/intelligence"),
+  gpu:          () => get<{ success: boolean; gpu: GpuInfo }>("/hardware/gpu"),
+  canFit:       (vramBytes: number) => get<{ success: boolean; canFit: boolean; freeVram: number; headroomBytes: number }>(`/hardware/canfit/${vramBytes}`),
 };
 
 // ── OS Interop ────────────────────────────────────────────────────────────────
@@ -3311,6 +3356,16 @@ export const sessions = {
   delete:  (id: string) =>
     fetch(`/api/chat/sessions/${encodeURIComponent(id)}`, { method: "DELETE" })
       .then(r => r.json() as Promise<{ success: boolean }>),
+  bulkDelete: (ids?: string[]) =>
+    fetch("/api/chat/sessions/bulk", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ids ?? [] }),
+    }).then(r => r.json() as Promise<{ success: boolean; deletedCount: number; deletedAll: boolean }>),
+  exportUrl: (id: string, format: "json" | "markdown" = "json") =>
+    `${BASE}/chat/sessions/${encodeURIComponent(id)}/export?format=${format}`,
+  search: (q: string, limit = 20) =>
+    get<{ success: boolean; results: Array<{ sessionId: string; sessionName: string; messageId: string; role: string; preview: string; createdAt: string }> }>(`/chat/sessions/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   branch:  (id: string, messageId: string) =>
     post<{ session: ChatSession }>(`/chat/sessions/${encodeURIComponent(id)}/branch`, { messageId }),
   addMessage: (id: string, role: string, content: string, extras?: { imagesJson?: string; supervisorJson?: string; contextJson?: string }) =>
@@ -4726,6 +4781,181 @@ export const localBuilderApi = {
     get<{ success: boolean; history: LocalBuilderEvalResult[] }>("/intelligence/local-builder/eval/history"),
 };
 
+// ── Phase 24: Executor framework ─────────────────────────────────────────────
+
+export const executorApi = {
+  // Emergency stop
+  emergencyStopState: () =>
+    get<{ success: boolean; active: boolean }>("/executor/emergency-stop"),
+  setEmergencyStop: (active: boolean, reason?: string) =>
+    post<{ success: boolean; active: boolean }>("/executor/emergency-stop", { active, reason }),
+  // Proof bundles
+  proofManifest: (jobId: string) =>
+    get<{ success: boolean; jobId: string; proofDir: string; manifest: string[] }>(`/executions/${encodeURIComponent(jobId)}/proof`),
+  proofFileUrl: (jobId: string, filename: string) =>
+    `${BASE}/executions/${encodeURIComponent(jobId)}/proof/${encodeURIComponent(filename)}`,
+  // IT Support executor
+  itValidate: (artifactId: string) =>
+    post<unknown>("/it-support/executor/validate", { artifactId }),
+  itDryRun: (artifactId: string) =>
+    post<unknown>("/it-support/executor/dry-run", { artifactId }),
+  itExecute: (artifactId: string, approvalId: string) =>
+    post<unknown>("/it-support/executor/execute", { artifactId, approvalId }),
+  itVerify: (artifactId: string, approvalId?: string) =>
+    post<unknown>("/it-support/executor/verify", { artifactId, approvalId }),
+  // Browser executor
+  browserValidate: (action: string, url: string) =>
+    post<unknown>("/browser/validate", { action, url }),
+  browserDryRun: (action: string, url: string, selector?: string) =>
+    post<unknown>("/browser/dry-run", { action, url, selector }),
+  browserExecute: (action: string, url: string, approvalId: string, selector?: string) =>
+    post<unknown>("/browser/execute", { action, url, approvalId, selector }),
+  // RAG executor
+  ragValidate: (collectionId: string, filePath?: string, content?: string) =>
+    post<unknown>("/rag/executor/validate", { collectionId, filePath, content }),
+  ragDryRun: (collectionId: string, filePath?: string, content?: string, source?: string) =>
+    post<unknown>("/rag/executor/dry-run", { collectionId, filePath, content, source }),
+  ragIngest: (collectionId: string, filePath?: string, content?: string, source?: string, approvalId?: string) =>
+    post<unknown>("/rag/executor/ingest", { collectionId, filePath, content, source, approvalId }),
+  ragJobs: () =>
+    get<{ success: boolean; jobs: unknown[] }>("/rag/executor/jobs"),
+};
+
+// ── Phase 24: Project Foreman ─────────────────────────────────────────────────
+
+export const projectForemanApi = {
+  status: () =>
+    get<{ success: boolean; status: unknown }>("/project-foreman/status"),
+  list: (filter?: { status?: string; kind?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (filter?.status) qs.set("status", filter.status);
+    if (filter?.kind) qs.set("kind", filter.kind);
+    if (filter?.limit) qs.set("limit", String(filter.limit));
+    const q = qs.toString();
+    return get<{ success: boolean; projects: unknown[] }>(`/project-foreman/projects${q ? `?${q}` : ""}`);
+  },
+  create: (body: { name: string; kind: string; goal: string; riskLevel?: string; workspacePath?: string; brief?: string }) =>
+    post<{ success: boolean; project: unknown }>("/project-foreman/projects", body),
+  detail: (id: string) =>
+    get<{ success: boolean; project: unknown; tasks: unknown[]; links: unknown[]; stats: unknown }>(`/project-foreman/projects/${encodeURIComponent(id)}`),
+  update: (id: string, body: Record<string, unknown>) =>
+    patch<{ success: boolean; project: unknown }>(`/project-foreman/projects/${encodeURIComponent(id)}`, body),
+  archive: (id: string, reason?: string) =>
+    post<{ success: boolean; project: unknown }>(`/project-foreman/projects/${encodeURIComponent(id)}/archive`, { reason }),
+  generatePlan: (id: string, body: Record<string, unknown>) =>
+    post<{ success: boolean; project: unknown; tasksCreated: unknown[] }>(`/project-foreman/projects/${encodeURIComponent(id)}/plan`, body),
+  documentationUrl: (id: string) =>
+    `${BASE}/project-foreman/projects/${encodeURIComponent(id)}/documentation`,
+  createTask: (projectId: string, body: { title: string; description?: string; proposedAction?: string }) =>
+    post<{ success: boolean; task: unknown }>(`/project-foreman/projects/${encodeURIComponent(projectId)}/tasks`, body),
+  updateTask: (taskId: string, body: Record<string, unknown>) =>
+    patch<{ success: boolean; task: unknown }>(`/project-foreman/tasks/${encodeURIComponent(taskId)}`, body),
+  deleteTask: (taskId: string) =>
+    del<{ success: boolean }>(`/project-foreman/tasks/${encodeURIComponent(taskId)}`),
+  addLink: (projectId: string, body: { kind: string; targetId: string; label: string }) =>
+    post<{ success: boolean; link: unknown }>(`/project-foreman/projects/${encodeURIComponent(projectId)}/links`, body),
+  listLinks: (projectId: string, kind?: string) =>
+    get<{ success: boolean; links: unknown[] }>(`/project-foreman/projects/${encodeURIComponent(projectId)}/links${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
+  removeLink: (linkId: string) =>
+    del<{ success: boolean }>(`/project-foreman/links/${encodeURIComponent(linkId)}`),
+};
+
+// ── Phase 24: Local Builder (new routes) ──────────────────────────────────────
+
+export const localBuilderPhase24Api = {
+  status: () =>
+    get<{ success: boolean; status: unknown }>("/local-builder/status"),
+  profiles: () =>
+    get<{ success: boolean; profiles: unknown[] }>("/local-builder/profiles"),
+  setProfile: (role: string, modelName: string | null, status: string) =>
+    post<{ success: boolean; profiles: unknown[] }>("/local-builder/profiles", { role, modelName, status }),
+  contextPacks: () =>
+    get<{ success: boolean; packs: unknown[] }>("/local-builder/context-packs"),
+  evalHistory: () =>
+    get<{ success: boolean; history: unknown[] }>("/local-builder/evals"),
+  runEval: (evalName: string) =>
+    post<{ success: boolean; result: unknown }>(`/local-builder/evals/${encodeURIComponent(evalName)}`),
+  proposals: () =>
+    get<{ success: boolean; proposals: unknown[] }>("/local-builder/proposals"),
+  createProposal: (body: { phaseId: string; taskSummary: string; contextPacks?: string[]; targetFiles?: string[] }) =>
+    post<{ success: boolean; proposal: unknown }>("/local-builder/proposals", body),
+  dryRunPatch: (proposalId: string, body: { unifiedDiff: string; workspacePath: string; targetFiles?: string[] }) =>
+    post<unknown>(`/local-builder/proposals/${encodeURIComponent(proposalId)}/dry-run`, body),
+  executePatch: (proposalId: string, body: { approvalId: string; unifiedDiff: string; workspacePath: string; targetFiles?: string[] }) =>
+    post<unknown>(`/local-builder/proposals/${encodeURIComponent(proposalId)}/execute`, body),
+};
+
+// ── Phase 24: Inventory + Home Autopilot executors ────────────────────────────
+
+export const inventoryExecutorApi = {
+  status: () => get<unknown>("/inventory/executor/status"),
+  check: (items?: Array<{ itemId?: string; name?: string; requiredQuantity?: number }>) =>
+    post<unknown>("/inventory/executor/check", { items }),
+  reorderSuggestions: () => get<{ count: number; suggestions: unknown[] }>("/inventory/executor/reorder-suggestions"),
+  createItem: (item: Record<string, unknown>, dryRun = true) =>
+    post<unknown>("/inventory/executor/create-item", { item, dryRun }),
+  proposeAction: (itemId: string, actionType: string, approvalId?: string) =>
+    post<unknown>("/inventory/executor/propose-action", { itemId, actionType, approvalId }),
+};
+
+export const homeAutopilotExecutorApi = {
+  status: () => get<unknown>("/home-autopilot/executor/status"),
+  haAction: (entityId: string, haAction: string, mode?: string) =>
+    post<unknown>("/home-autopilot/executor/ha-action", { entityId, haAction, mode }),
+  mqttEvaluate: (topic: string, profileId?: string) =>
+    post<unknown>("/home-autopilot/executor/mqtt", { topic, profileId }),
+  deviceAction: (deviceId: string, deviceAction: string, mode?: string) =>
+    post<unknown>("/home-autopilot/executor/device", { deviceId, deviceAction, mode }),
+};
+
+
+// ── Phase 24: Business Draft Executor ────────────────────────────────────────
+
+export const businessDraftExecutorApi = {
+  validate: (draftId: string) =>
+    post<unknown>("/business/executor/validate", { draftId }),
+  dryRun: (draftId: string) =>
+    post<unknown>("/business/executor/dry-run", { draftId }),
+  send: (draftId: string, approvalId: string) =>
+    post<unknown>("/business/executor/send", { draftId, approvalId }),
+};
+
+
+// ── Agentic RAG (Phase 25) ────────────────────────────────────────────────────
+export interface AgenticRagResult {
+  answer: string;
+  chunks: Array<{ id: string; text: string; score: number; collection: string }>;
+  trace?: Array<{ iteration: number; query: string; chunksFound: number }>;
+  iterationsUsed: number;
+}
+
+export const agenticRag = {
+  query: (params: {
+    query: string;
+    collections?: string[];
+    maxIterations?: number;
+    includeTrace?: boolean;
+    relevanceThreshold?: number;
+    maxChunks?: number;
+  }) => post<{ success: boolean } & AgenticRagResult>("/rag/agentic", params),
+
+  simple: (query: string, collections?: string[]) =>
+    post<{ success: boolean } & AgenticRagResult>("/rag/agentic/simple", { query, collections }),
+};
+
+// ── Workspace Git integration ─────────────────────────────────────────────────
+
+export const workspaceGit = {
+  status: (path: string) =>
+    get<{ success: boolean; branch: string; dirty: boolean; changedFiles: Array<{ status: string; file: string }>; commits: Array<{ hash: string; message: string }>; diffStat: string }>(`/workspace/git/status?path=${encodeURIComponent(path)}`),
+  stage: (path: string, files?: string[]) =>
+    post<{ success: boolean; stdout: string; stderr: string }>("/workspace/git/stage", { path, files }),
+  commit: (path: string, message: string) =>
+    post<{ success: boolean; stdout: string; stderr: string }>("/workspace/git/commit", { path, message }),
+  diff: (path: string, file?: string) =>
+    get<{ success: boolean; diff: string; file: string | null }>(`/workspace/git/diff?path=${encodeURIComponent(path)}${file ? `&file=${encodeURIComponent(file)}` : ""}`),
+};
+
 export default {
   health, kernel, models, modelsExtra, chat, observability, tasks, approvals,
   system, systemExtra, workspace, workspaceExtra, runtime, providerPolicy,
@@ -4745,4 +4975,14 @@ export default {
   homeAutopilotApi,
   homelabApi,
   localBuilderApi,
+  // Phase 24
+  executorApi,
+  projectForemanApi,
+  localBuilderPhase24Api,
+  inventoryExecutorApi,
+  homeAutopilotExecutorApi,
+  businessDraftExecutorApi,
+  workspaceGit,
+  // Phase 25
+  agenticRag,
 };

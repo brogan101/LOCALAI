@@ -6,8 +6,8 @@ import {
   CheckCircle, AlertTriangle, XCircle, GitBranch,
   Brain, Search, Play, ChevronDown, ChevronRight,
   FileCode, Loader2, Database, Camera, Archive, Copy,
-  File, Terminal, Share2,
-} from "lucide-react";
+  File, Terminal, Share2, Bot,
+  ChevronUp} from "lucide-react";
 import api, {
   apiErrorMessage,
   type ContextWorkspaceSummary,
@@ -1318,12 +1318,347 @@ function RagTab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+// ── Local Builder tab ─────────────────────────────────────────────────────────
+
+
+// ── Git Integration Panel ─────────────────────────────────────────────────────
+
+function GitPanel({ workspacePath }: { workspacePath: string }) {
+  const qc = useQueryClient();
+  const [commitMsg, setCommitMsg] = useState("");
+  const [showDiff, setShowDiff] = useState<string | null>(null);
+
+  const statusQ = useQuery({
+    queryKey: ["git-status", workspacePath],
+    queryFn: () => api.workspaceGit.status(workspacePath),
+    enabled: !!workspacePath,
+    refetchInterval: 15_000,
+  });
+
+  const stageMut = useMutation({
+    mutationFn: (files?: string[]) => api.workspaceGit.stage(workspacePath, files),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["git-status", workspacePath] }),
+  });
+
+  const commitMut = useMutation({
+    mutationFn: (msg: string) => api.workspaceGit.commit(workspacePath, msg),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["git-status", workspacePath] });
+      setCommitMsg("");
+    },
+  });
+
+  const diffQ = useQuery({
+    queryKey: ["git-diff", workspacePath, showDiff],
+    queryFn: () => api.workspaceGit.diff(workspacePath, showDiff ?? undefined),
+    enabled: !!showDiff,
+  });
+
+  const git = (statusQ.data as any);
+  if (!git?.success) return (
+    <div className="p-4 text-sm" style={{ color: "var(--color-muted)" }}>
+      {statusQ.isLoading ? "Loading git status…" : "No git repository or git not available in this workspace."}
+    </div>
+  );
+
+  const statusColor = (s: string) => s.startsWith("M") ? "var(--color-warn)" : s.startsWith("?") ? "var(--color-muted)" : s.startsWith("A") ? "var(--color-success)" : "var(--color-error)";
+
+  return (
+    <div className="flex flex-col gap-3 p-4 overflow-y-auto">
+      {/* Branch + status */}
+      <div className="flex items-center gap-2">
+        <div className="w-2 h-2 rounded-full" style={{ background: git.dirty ? "var(--color-warn)" : "var(--color-success)" }} />
+        <span className="text-sm font-medium" style={{ color: "var(--color-foreground)" }}>
+          {git.branch}
+        </span>
+        <span className="text-xs" style={{ color: "var(--color-muted)" }}>
+          {git.dirty ? `${git.changedFiles?.length ?? 0} changed file(s)` : "clean"}
+        </span>
+        {!stageMut.isPending && (
+          <button type="button" onClick={() => stageMut.mutate(undefined)}
+            className="ml-auto text-xs px-2 py-1 rounded"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}>
+            Stage all
+          </button>
+        )}
+      </div>
+
+      {/* Changed files */}
+      {git.changedFiles?.length > 0 && (
+        <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+          {git.changedFiles.map((f: { status: string; file: string }) => (
+            <div key={f.file}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer hover:opacity-80"
+              style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-elevated)" }}
+              onClick={() => setShowDiff(showDiff === f.file ? null : f.file)}>
+              <code className="font-mono w-5 shrink-0 font-bold" style={{ color: statusColor(f.status) }}>
+                {f.status}
+              </code>
+              <span className="flex-1 font-mono truncate" style={{ color: "var(--color-foreground)" }}>{f.file}</span>
+              {showDiff === f.file && <ChevronUp size={10} />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Diff viewer */}
+      {showDiff && diffQ.data && (
+        <pre className="text-xs overflow-auto rounded-lg p-3 max-h-64"
+          style={{ background: "var(--color-elevated)", color: "var(--color-muted)", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap" }}>
+          {(diffQ.data as any).diff?.slice(0, 8000) || "(no diff)"}
+        </pre>
+      )}
+
+      {/* Commit */}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={commitMsg}
+          onChange={e => setCommitMsg(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && commitMsg.trim()) commitMut.mutate(commitMsg); }}
+          placeholder="Commit message…"
+          className="flex-1 text-xs rounded-lg px-3 py-2"
+          style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }}
+        />
+        <button
+          type="button"
+          disabled={!commitMsg.trim() || commitMut.isPending}
+          onClick={() => commitMut.mutate(commitMsg)}
+          className="text-xs px-3 py-2 rounded-lg disabled:opacity-40"
+          style={{ background: "var(--color-accent)", color: "#fff" }}>
+          {commitMut.isPending ? "…" : "Commit"}
+        </button>
+      </div>
+
+      {/* Recent commits */}
+      {git.commits?.length > 0 && (
+        <div>
+          <p className="text-xs mb-1.5" style={{ color: "var(--color-muted)" }}>Recent commits</p>
+          {git.commits.slice(0, 5).map((c: { hash: string; message: string }) => (
+            <div key={c.hash} className="flex items-center gap-2 text-xs py-1" style={{ borderBottom: "1px solid var(--color-border)" }}>
+              <code className="font-mono shrink-0" style={{ color: "var(--color-accent)" }}>{c.hash}</code>
+              <span className="truncate" style={{ color: "var(--color-muted)" }}>{c.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LocalBuilderTabInline() {
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [status, setStatus] = useState<any>(null);
+  const [proposals, setProposals] = useState<any[]>([]);
+  const [evalResult, setEvalResult] = useState<any>(null);
+  const [busyEval, setBusyEval] = useState(false);
+  const [phaseId, setPhaseId] = useState("");
+  const [taskSummary, setTaskSummary] = useState("");
+  const [proposalResult, setProposalResult] = useState<any>(null);
+
+  const loadStatus = () => {
+    fetch("/api/local-builder/status").then(r => r.json()).then(d => {
+      setStatus(d.status);
+      setProfiles(d.status?.profiles ?? []);
+    }).catch(() => {});
+  };
+
+  const loadProposals = () => {
+    fetch("/api/local-builder/proposals").then(r => r.json()).then(d => {
+      setProposals(d.proposals ?? []);
+    }).catch(() => {});
+  };
+
+  useEffect(() => { loadStatus(); loadProposals(); }, []);
+
+  const ROLE_LABELS: Record<string, string> = {
+    fast_code: "Fast coding", deep_code: "Deep coding",
+    reviewer: "Reviewer", rag_embedding: "RAG embeddings",
+  };
+  const STATUS_COLOR: Record<string, string> = {
+    configured: "var(--color-success)",
+    not_configured: "var(--color-warn)",
+    unavailable: "var(--color-error)",
+  };
+
+  async function saveProfile(role: string, modelName: string) {
+    await fetch("/api/local-builder/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role, modelName: modelName.trim() || null, status: modelName.trim() ? "configured" : "not_configured" }),
+    });
+    loadStatus();
+  }
+
+  async function runEval(evalName: string) {
+    setBusyEval(true);
+    const r = await fetch(`/api/local-builder/evals/${evalName}`, { method: "POST" });
+    const d = await r.json();
+    setEvalResult(d.result);
+    setBusyEval(false);
+  }
+
+  async function createProposal() {
+    const r = await fetch("/api/local-builder/proposals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phaseId, taskSummary, contextPacks: [], targetFiles: [] }),
+    });
+    const d = await r.json();
+    setProposalResult(d);
+    loadProposals();
+  }
+
+  return (
+    <div className="p-4 space-y-4 overflow-y-auto h-full">
+      {/* Safety reminder */}
+      <div className="rounded-xl px-4 py-3 text-xs flex items-start gap-2"
+        style={{ background: "color-mix(in srgb, var(--color-info) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)" }}>
+        <AlertTriangle size={12} style={{ color: "var(--color-info)", flexShrink: 0, marginTop: 1 }} />
+        <span style={{ color: "var(--color-muted)" }}>
+          <strong style={{ color: "var(--color-foreground)" }}>Local-only.</strong> No cloud escalation.
+          No self-modification. All file edits require tier3 approval before applying.
+        </span>
+      </div>
+
+      {/* Model profiles */}
+      <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+        <div className="px-4 py-2.5 flex items-center gap-2 text-sm font-medium"
+          style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)", color: "var(--color-foreground)" }}>
+          <Bot size={14} style={{ color: "var(--color-accent)" }} />
+          Model roles
+          <span className="ml-auto text-xs" style={{ color: status?.ready ? "var(--color-success)" : "var(--color-warn)" }}>
+            {status?.ready ? "Ready" : "Not ready"}
+          </span>
+        </div>
+        <div className="p-3 space-y-2">
+          {profiles.map((p: any) => (
+            <ProfileRowInline key={p.role} profile={p} roleLabel={ROLE_LABELS[p.role] ?? p.role}
+              statusColor={STATUS_COLOR[p.status] ?? "var(--color-muted)"}
+              onSave={saveProfile} />
+          ))}
+          {profiles.length === 0 && <p className="text-xs" style={{ color: "var(--color-muted)" }}>Loading…</p>}
+        </div>
+        {(status?.contextPackNames ?? []).length > 0 && (
+          <div className="px-4 pb-3">
+            <p className="text-xs mb-1.5" style={{ color: "var(--color-muted)" }}>Context packs:</p>
+            <div className="flex flex-wrap gap-1.5">
+              {status.contextPackNames.map((n: string) => (
+                <span key={n} className="text-xs px-2 py-0.5 rounded font-mono"
+                  style={{ background: "var(--color-elevated)", color: "var(--color-muted)" }}>{n}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Evals */}
+      <div className="flex gap-2">
+        {["repo_summary", "safe_patch_plan"].map(name => (
+          <button key={name} type="button" disabled={busyEval} onClick={() => runEval(name)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg disabled:opacity-40"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)" }}>
+            {busyEval ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />}
+            {name.replace("_", " ")}
+          </button>
+        ))}
+        {evalResult && (
+          <span className="text-xs self-center" style={{ color: evalResult.passed ? "var(--color-success)" : "var(--color-warn)" }}>
+            {evalResult.passed ? "✓" : "✗"} {evalResult.details?.slice(0, 60)}
+          </span>
+        )}
+      </div>
+
+      {/* New proposal */}
+      <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+        <div className="px-4 py-2.5 text-sm font-medium"
+          style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)", color: "var(--color-foreground)" }}>
+          New build proposal
+        </div>
+        <div className="p-3 space-y-2">
+          <input type="text" value={phaseId} onChange={e => setPhaseId(e.target.value)}
+            placeholder="Phase ID (e.g. phase-25)"
+            className="w-full rounded-lg px-3 py-1.5 text-xs"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }} />
+          <textarea value={taskSummary} onChange={e => setTaskSummary(e.target.value)}
+            placeholder="Task summary — what this phase implements"
+            rows={3} className="w-full rounded-lg px-3 py-1.5 text-xs resize-none"
+            style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }} />
+          <button type="button" disabled={!phaseId.trim() || !taskSummary.trim()} onClick={createProposal}
+            className="w-full py-2 text-xs rounded-lg font-medium disabled:opacity-40"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>
+            Create proposal
+          </button>
+          {proposalResult && (
+            <p className="text-xs" style={{ color: proposalResult.proposal?.hardBlocked ? "var(--color-error)" : "var(--color-success)" }}>
+              {proposalResult.proposal?.hardBlocked ? `⛔ ${proposalResult.proposal.hardBlockReason}` : `✓ Proposal created (ID: ${proposalResult.proposal?.id?.slice(0, 8)})`}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Proposals list */}
+      {proposals.length > 0 && (
+        <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+          <div className="px-4 py-2.5 text-sm font-medium"
+            style={{ borderBottom: "1px solid var(--color-border)", background: "var(--color-surface)", color: "var(--color-foreground)" }}>
+            Proposals ({proposals.length})
+          </div>
+          {proposals.slice(0, 8).map((p: any) => (
+            <div key={p.id} className="px-4 py-2 text-xs" style={{ borderBottom: "1px solid var(--color-border)" }}>
+              <span className="font-medium" style={{ color: "var(--color-foreground)" }}>{p.phase_id ?? p.phaseId}: </span>
+              <span style={{ color: "var(--color-muted)" }}>{(p.task_summary ?? p.taskSummary ?? "").slice(0, 70)}</span>
+              <span className="ml-2" style={{ color: p.hard_blocked ? "var(--color-error)" : "var(--color-muted)" }}>
+                {p.hard_blocked ? "⛔" : p.status}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfileRowInline({ profile, roleLabel, statusColor, onSave }: {
+  profile: any; roleLabel: string; statusColor: string;
+  onSave: (role: string, modelName: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(profile.modelName ?? "");
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 rounded-lg" style={{ background: "var(--color-elevated)" }}>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium" style={{ color: "var(--color-foreground)" }}>{roleLabel}</div>
+        {!editing
+          ? <div className="text-xs" style={{ color: profile.modelName ? statusColor : "var(--color-muted)" }}>{profile.modelName ?? "not configured"}</div>
+          : <input autoFocus type="text" value={draft} onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { onSave(profile.role, draft); setEditing(false); } }}
+              className="text-xs w-full mt-0.5 px-2 py-0.5 rounded"
+              style={{ background: "var(--color-surface)", border: "1px solid var(--color-accent)", color: "var(--color-foreground)", outline: "none" }} />
+        }
+      </div>
+      <div className="w-2 h-2 rounded-full shrink-0" style={{ background: statusColor }} />
+      {!editing
+        ? <button type="button" onClick={() => setEditing(true)} className="text-xs px-2 py-0.5 rounded"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}>Set</button>
+        : <div className="flex gap-1">
+            <button type="button" onClick={() => { onSave(profile.role, draft); setEditing(false); }}
+              className="text-xs px-2 py-0.5 rounded" style={{ background: "var(--color-accent)", color: "#fff" }}>Save</button>
+            <button type="button" onClick={() => setEditing(false)}
+              className="text-xs px-2 py-0.5 rounded" style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}>✕</button>
+          </div>
+      }
+    </div>
+  );
+}
+
 export default function WorkspacePage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"projects" | "intelligence" | "files" | "rag">("projects");
+  const [tab, setTab] = useState<"projects" | "intelligence" | "files" | "rag" | "builder" | "git">("projects");
   const [showCreate, setShowCreate] = useState(false);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<Record<string, string>>({});
+  const [rootPath, setRootPath] = useState("");
   const permissions = useAgentPermissions();
   const execDisabled = permissions.settings ? !permissions.canExec : false;
   const editsDisabled = permissions.settings ? !permissions.canEdit : false;
@@ -1524,10 +1859,12 @@ npm run dev
       <div className="flex gap-1 rounded-lg p-1"
         style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", width: "fit-content" }}>
         {([
-          { id: "projects", label: "Projects", icon: Folder },
+          { id: "projects",     label: "Projects",     icon: Folder },
           { id: "intelligence", label: "Intelligence", icon: Brain },
-          { id: "files", label: "Files", icon: FileCode },
-          { id: "rag", label: "RAG", icon: Database },
+          { id: "files",        label: "Files",        icon: FileCode },
+          { id: "rag",          label: "RAG",          icon: Database },
+          { id: "builder",      label: "Builder",      icon: Bot },
+          { id: "git",          label: "Git",          icon: GitBranch },
         ] as const).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -1670,6 +2007,15 @@ npm run dev
       {/* ── RAG tab ── */}
       {tab === "rag" && (
         <RagTab />
+      )}
+      {tab === "builder" && (
+        <LocalBuilderTabInline />
+      )}
+      {tab === "git" && rootPath && (
+        <GitPanel workspacePath={rootPath} />
+      )}
+      {tab === "git" && !rootPath && (
+        <div className="p-4 text-sm" style={{ color: "var(--color-muted)" }}>Select a workspace above to see git status, diff, and commit.</div>
       )}
     </div>
   );

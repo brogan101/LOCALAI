@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Typecheck, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Show toolchain
+        run: |
+          node --version
+          pnpm --version
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (all workspaces)
+        run: pnpm -r typecheck
+
+      - name: Test (all workspaces)
+        run: pnpm test
+
+      - name: Build frontend
+        run: pnpm --filter localai-control-center build
+
+      - name: Build kit verification
+        run: |
+          if [ -f scripts/jarvis/verify-build-kit.mjs ]; then
+            node scripts/jarvis/verify-build-kit.mjs
+          else
+            echo "verify-build-kit.mjs not found — skipping"
+          fi
+
+      - name: Upload build output (frontend)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: artifacts/localai-control-center/dist
+          retention-days: 7
+          if-no-files-found: warn

@@ -191,16 +191,7 @@ async function embed(text: string): Promise<number[]> {
 const CHUNK_TOKENS = 512;
 const OVERLAP_TOKENS = 64;
 
-function roughTokenCount(text: string): number {
-  // ~4 chars per token is a reasonable approximation
-  return Math.ceil(text.length / 4);
-}
-
 function chunkText(text: string): string[] {
-  const words = text.split(/\s+/);
-  const chunkWords = CHUNK_TOKENS * 4 / 1; // char-based
-  const overlapWords = OVERLAP_TOKENS * 4 / 1;
-
   // Use character-based chunking for simplicity + accuracy
   const charChunk  = CHUNK_TOKENS  * 4;
   const charOverlap = OVERLAP_TOKENS * 4;

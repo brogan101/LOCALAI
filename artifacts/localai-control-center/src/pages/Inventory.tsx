@@ -123,7 +123,7 @@ export default function InventoryPage() {
   });
 
   const reorder = useMutation({
-    mutationFn: () => api.inventoryApi.reorderSuggestions(),
+    mutationFn: () => api.inventoryExecutorApi.reorderSuggestions(),
     onSuccess: (result) => setLastMessage(`${result.count} reorder proposal${result.count === 1 ? "" : "s"} created; no purchases executed.`),
     onError: (error) => setLastMessage(apiErrorMessage(error)),
   });

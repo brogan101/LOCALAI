@@ -14,20 +14,17 @@
  */
 
 import path from "path";
-import { fileURLToPath } from "url";
 import { existsSync } from "fs";
-import { readFile, writeFile } from "fs/promises";
-import { exec as cpExec, spawn } from "child_process";
+import { readFile } from "fs/promises";
+import { exec as cpExec } from "child_process";
 import { promisify } from "util";
 import { logger } from "./logger.js";
 import { thoughtLog } from "./thought-log.js";
-import { isWindows, toolsRoot, postJson } from "./runtime.js";
+import { isWindows, postJson } from "./runtime.js";
 import { writeManagedFile } from "./snapshot-manager.js";
 import { DEFAULT_FALLBACK_MODEL } from "../config/models.config.js";
 
 const execAsync = promisify(cpExec);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

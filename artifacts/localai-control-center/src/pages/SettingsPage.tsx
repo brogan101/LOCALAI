@@ -155,6 +155,88 @@ function SelectInput({ value, onChange, options }: {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+
+// ── Executor Controls ─────────────────────────────────────────────────────────
+
+function ExecutorControlsSection() {
+  const [eStopActive, setEStopActive] = useState<boolean | null>(null);
+  const [toggling, setToggling] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/executor/emergency-stop")
+      .then(r => r.json())
+      .then(d => setEStopActive(d.active ?? false))
+      .catch(() => setEStopActive(false));
+  }, []);
+
+  async function toggleStop() {
+    if (eStopActive === null) return;
+    setToggling(true);
+    try {
+      const newVal = !eStopActive;
+      const res = await fetch("/api/executor/emergency-stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: newVal, reason: newVal ? "Activated from Settings" : "Cleared from Settings" }),
+      });
+      const d = await res.json();
+      setEStopActive(d.active);
+    } finally { setToggling(false); }
+  }
+
+  const proofPath = "~/LocalAI-Tools/proof/<jobId>/";
+
+  return (
+    <div className="rounded-xl overflow-hidden" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <span className="text-sm font-semibold" style={{ color: "var(--color-foreground)" }}>Executor Controls</span>
+      </div>
+      <div className="px-4 py-3 flex items-start justify-between gap-4" style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <div className="flex-1">
+          <div className="text-sm font-medium" style={{ color: eStopActive ? "var(--color-error)" : "var(--color-foreground)" }}>
+            Emergency stop {eStopActive ? "— ACTIVE" : ""}
+          </div>
+          <div className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>
+            Instantly halts all executors. No new runs start until cleared.
+          </div>
+        </div>
+        <button type="button" disabled={eStopActive === null || toggling} onClick={toggleStop}
+          className="shrink-0 px-3 py-1.5 text-xs rounded-lg font-medium disabled:opacity-40"
+          style={{
+            background: eStopActive ? "color-mix(in srgb, var(--color-success) 15%, transparent)" : "color-mix(in srgb, var(--color-error) 15%, transparent)",
+            border: `1px solid ${eStopActive ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : "color-mix(in srgb, var(--color-error) 30%, transparent)"}`,
+            color: eStopActive ? "var(--color-success)" : "var(--color-error)",
+          }}>
+          {toggling ? "…" : eStopActive ? "Clear stop" : "Activate stop"}
+        </button>
+      </div>
+      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+        <div className="text-sm font-medium mb-1" style={{ color: "var(--color-foreground)" }}>Proof bundle location</div>
+        <code className="text-xs" style={{ color: "var(--color-accent)", fontFamily: "var(--font-mono)" }}>{proofPath}</code>
+        <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>
+          Every executor run saves stdout, stderr, script, and rollback notes here. View from Operations → approval → proof bundle.
+        </p>
+      </div>
+      <div className="px-4 py-3">
+        <div className="text-sm font-medium mb-2" style={{ color: "var(--color-foreground)" }}>Risk tiers</div>
+        {[
+          ["tier2 — safe local execute", "Read-only or dry-run. Auto-approved. No real-world writes.", "var(--color-success)"],
+          ["tier3 — file modification", "Writes files or DB records. Requires explicit Approve in Operations.", "var(--color-warn)"],
+          ["tier5 — manual only", "Permanently blocked: AD deletes, drive format, physical hardware writes.", "var(--color-error)"],
+        ].map(([tier, desc, color]) => (
+          <div key={tier} className="flex items-start gap-2 mb-1.5">
+            <div className="w-2 h-2 rounded-full shrink-0 mt-1" style={{ background: color }} />
+            <div>
+              <span className="text-xs font-medium" style={{ color }}>{tier}</span>
+              <span className="text-xs ml-1.5" style={{ color: "var(--color-muted)" }}>{desc}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const qc = useQueryClient();
   const [draft, setDraft] = useState<AppSettings | null>(null);
@@ -395,6 +477,8 @@ export default function SettingsPage() {
           <Toggle value={s.requireActionConfirmation ?? true} onChange={(v) => update("requireActionConfirmation", v)} />
         </SettingRow>
       </Card>
+
+      <ExecutorControlsSection />
 
       {/* ── Remote ─────────────────────────────────────────────────────────── */}
       <Card>

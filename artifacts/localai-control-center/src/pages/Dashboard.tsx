@@ -915,51 +915,105 @@ function PullStackButton() {
 // ── Phase 20: Runtime mode status card ───────────────────────────────────────
 
 function RuntimeModeCard({ onNavigate }: { onNavigate: (p: string) => void }) {
+  const qc = useQueryClient();
+
   const { data } = useQuery({
     queryKey: ["runtime-mode"],
     queryFn: () => api.runtime.get(),
+    refetchInterval: 8_000,
+  });
+
+  const approvalsQ = useQuery({
+    queryKey: ["approvals-pending-count"],
+    queryFn: () => api.approvals.list(100),
     refetchInterval: 10_000,
+    select: (d: any) => (d?.approvals ?? []).filter((a: any) => a.status === "waiting_for_approval").length,
+  });
+
+  const modeMut = useMutation({
+    mutationFn: (m: string) => api.runtime.setMode(m as any, m === "Gaming" ? "Quick toggle from dashboard" : "Restored from gaming mode"),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["runtime-mode"] });
+      void qc.invalidateQueries({ queryKey: ["tags"] });
+    },
   });
 
   const mode = data?.mode ?? "Unknown";
   const physicalActionsDisabled = data?.physicalActionsDisabled ?? false;
+  const isGaming = mode.toLowerCase() === "gaming";
+  const pendingCount = approvalsQ.data ?? 0;
 
   const modeColor =
     mode === "EmergencyStop" ? "var(--color-error)"   :
-    mode === "Gaming"        ? "var(--color-warn)"    :
+    isGaming                 ? "var(--color-warn)"    :
     mode === "Coding"        ? "var(--color-info)"    :
     mode === "Lightweight"   ? "var(--color-success)" :
                                "var(--color-success)";
 
   return (
     <div
-      className="rounded-xl p-3 cursor-pointer hover:opacity-90"
+      className="rounded-xl p-3"
       data-testid="runtime-mode-card"
       style={{
         background: "var(--color-surface)",
         border: `1px solid color-mix(in srgb, ${modeColor} 25%, var(--color-border))`,
       }}
-      onClick={() => onNavigate("/operations")}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 mb-2">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ background: modeColor }} />
         <span className="text-xs font-medium" style={{ color: "var(--color-muted)" }}>Runtime Mode</span>
         <span
           className="text-xs font-semibold ml-auto px-1.5 py-0.5 rounded"
-          style={{
-            background: `color-mix(in srgb, ${modeColor} 12%, transparent)`,
-            color: modeColor,
-          }}
+          style={{ background: `color-mix(in srgb, ${modeColor} 12%, transparent)`, color: modeColor }}
         >
           {mode}
         </span>
       </div>
+
       {physicalActionsDisabled && (
-        <div className="flex items-center gap-1 mt-1.5 text-xs" style={{ color: "var(--color-warn)" }}>
+        <div className="flex items-center gap-1 mb-2 text-xs" style={{ color: "var(--color-warn)" }}>
           <ShieldAlert size={10} />
           Physical actions disabled
         </div>
       )}
+
+      {/* Pending approvals badge */}
+      {pendingCount > 0 && (
+        <button
+          type="button"
+          onClick={() => onNavigate("/operations")}
+          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg mb-2 text-xs"
+          style={{
+            background: "color-mix(in srgb, var(--color-warn) 12%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-warn) 25%, transparent)",
+            color: "var(--color-warn)",
+            cursor: "pointer",
+          }}
+        >
+          <span>● {pendingCount} pending approval{pendingCount !== 1 ? "s" : ""}</span>
+          <span style={{ opacity: 0.7 }}>Review →</span>
+        </button>
+      )}
+
+      {/* Gaming mode quick-toggle */}
+      <button
+        type="button"
+        disabled={modeMut.isPending}
+        onClick={() => modeMut.mutate(isGaming ? "Coding" : "Gaming")}
+        className="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs rounded-lg font-medium transition-all disabled:opacity-50"
+        style={{
+          background: isGaming
+            ? "color-mix(in srgb, var(--color-success) 14%, transparent)"
+            : "color-mix(in srgb, var(--color-warn) 14%, transparent)",
+          border: isGaming
+            ? "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)"
+            : "1px solid color-mix(in srgb, var(--color-warn) 30%, transparent)",
+          color: isGaming ? "var(--color-success)" : "var(--color-warn)",
+          cursor: "pointer",
+        }}
+      >
+        {modeMut.isPending ? "Switching…" : isGaming ? "🎮 Exit gaming mode" : "🎮 Enable gaming mode"}
+      </button>
     </div>
   );
 }
@@ -1091,6 +1145,9 @@ export default function Dashboard() {
   const sovereign = state?.sovereign;
   const vramGuard = tags?.vramGuard;
 
+  const hasModels = (tags?.models?.length ?? 0) > 0;
+  const ollamaOk = tags?.ollamaReachable ?? true; // don't flash on first load
+
   const categoryColor =
     sovereign?.taskCategory === "coding"   ? "var(--color-info)"    :
     sovereign?.taskCategory === "sysadmin" ? "var(--color-warn)"    :
@@ -1099,6 +1156,26 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
+      {/* No models installed — setup prompt */}
+      {tags && ollamaOk && !hasModels && (
+        <div
+          className="flex items-center justify-between px-4 py-3 text-sm shrink-0 cursor-pointer"
+          onClick={() => navigate("/setup")}
+          style={{
+            background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+            borderBottom: "1px solid color-mix(in srgb, var(--color-accent) 25%, transparent)",
+          }}
+        >
+          <span style={{ color: "var(--color-foreground)" }}>
+            <strong>No AI models installed.</strong>{" "}
+            <span style={{ color: "var(--color-muted)" }}>Run the setup wizard to download a model that fits your GPU.</span>
+          </span>
+          <span className="flex items-center gap-1 font-medium text-xs px-3 py-1 rounded-lg shrink-0 ml-4"
+            style={{ background: "var(--color-accent)", color: "#fff" }}>
+            Get Started →
+          </span>
+        </div>
+      )}
       {/* Ollama offline banner */}
       {tags && !tags.ollamaReachable && (
         <div className="flex items-center justify-between px-4 py-2 text-sm font-medium shrink-0"

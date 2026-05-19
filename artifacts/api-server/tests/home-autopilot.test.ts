@@ -471,4 +471,270 @@ await test("POST /api/home-autopilot/mqtt/topics/evaluate: returns 400 when topi
   assert.equal(status, 400);
 });
 
+// ── 10. Executor execution tests (HA REST + MQTT publish) ────────────────────
+
+import { executeApproved } from "../src/lib/approved-executor.js";
+import { createApprovalRequest, approveRequest } from "../src/lib/approval-queue.js";
+import {
+  ensureHomeAutopilotExecutorRegistered,
+  HOME_AUTOPILOT_EXECUTOR_KIND,
+  _testOverrideMqttConnect,
+  _testRunHomeAutopilot,
+} from "../src/lib/home-autopilot-executor.js";
+import mqtt from "mqtt";
+
+ensureHomeAutopilotExecutorRegistered();
+
+function _autoApproveExec(payload: unknown) {
+  const a = createApprovalRequest({
+    type: HOME_AUTOPILOT_EXECUTOR_KIND,
+    title: "executor test",
+    summary: "auto-approved for test",
+    riskTier: "tier2_safe_local_execute",
+    requestedAction: `${HOME_AUTOPILOT_EXECUTOR_KIND}.test`,
+    payload: payload as Record<string, unknown>,
+  });
+  approveRequest(a.id, "test auto-approve");
+  return a.id;
+}
+
+async function runExec(payload: unknown, mode = "execute") {
+  const approvalId = _autoApproveExec(payload);
+  return executeApproved({
+    executorKind: HOME_AUTOPILOT_EXECUTOR_KIND,
+    approvalId,
+    requestedAction: "executor test",
+    mode: mode as Parameters<typeof executeApproved>[0]["mode"],
+    payload: payload as Record<string, unknown>,
+    skipRuntimeModeCheck: true,
+  });
+}
+
+// Give the shared haProfile a real endpoint + token so execute tests can reach the handler
+upsertHaProfile({
+  id: haProfile.id,
+  name: haProfile.name,
+  endpoint: "http://ha.test:8123",
+  haMcpProfile: { token: "test-token-xyz" },
+  configured: true,
+  entityAllowlist: haProfile.entityAllowlist,
+});
+
+// Test 1 ─ dry_run: wouldCall populated
+// Use the runner directly so we can inspect ExecutorRunnerResult.result (not in ApprovedExecutionResult)
+await test("ha_action dry_run: executed=false and result.wouldCall is populated with correct URL", async () => {
+  const mockCtx = {
+    request: {
+      mode: "dry_run" as const,
+      payload: {
+        action: "ha_action",
+        entityId: "sensor.temp",
+        haAction: "read_state",
+        domain: "sensor",
+        service: "read_state",
+      },
+      approvalId: "test-dry-run",
+      executorKind: HOME_AUTOPILOT_EXECUTOR_KIND,
+      requestedAction: "test dry run",
+    },
+    approval: {} as any,
+    job: {} as any,
+    proofDir: "",
+    checkpoint: () => {},
+    appendVerification: async () => {},
+  };
+  const result = await _testRunHomeAutopilot(mockCtx as any);
+  assert.equal(result.success, true);
+  assert.equal(result.executed, false);
+  const wc = (result.result as Record<string, unknown> | undefined)?.["wouldCall"] as Record<string, unknown> | undefined;
+  assert.ok(wc, "wouldCall must be present in dry_run result");
+  assert.equal(wc["method"], "POST");
+  assert.ok((wc["url"] as string).includes("ha.test:8123"), "URL must contain HA host");
+  assert.ok((wc["url"] as string).includes("sensor/read_state"), "URL must contain domain/service path");
+});
+
+// Test 2 ─ execute 200: executed=true
+await test("ha_action execute: fetch 200 returns executed=true and summary contains 'executed'", async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => "" }) as unknown as Response;
+  try {
+    const result = await runExec({
+      action: "ha_action",
+      entityId: "sensor.temp",
+      haAction: "read_state",
+      domain: "sensor",
+      service: "read_state",
+    });
+    assert.equal(result.executed, true);
+    assert.ok(result.redactedSummary?.includes("executed"), `summary='${result.redactedSummary}'`);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+// Test 3 ─ execute 401: authentication failed
+await test("ha_action execute: fetch 401 returns executed=false and summary contains 'authentication failed'", async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => ({ status: 401, ok: false, text: async () => "" }) as unknown as Response;
+  try {
+    const result = await runExec({
+      action: "ha_action",
+      entityId: "sensor.temp",
+      haAction: "read_state",
+      domain: "sensor",
+      service: "read_state",
+    });
+    assert.equal(result.executed, false);
+    assert.ok(result.redactedSummary?.includes("authentication failed"), `summary='${result.redactedSummary}'`);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+// Test 4 ─ execute 404: entity not found
+await test("ha_action execute: fetch 404 returns executed=false and summary contains 'not found'", async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => ({ status: 404, ok: false, text: async () => "" }) as unknown as Response;
+  try {
+    const result = await runExec({
+      action: "ha_action",
+      entityId: "sensor.temp",
+      haAction: "read_state",
+      domain: "sensor",
+      service: "read_state",
+    });
+    assert.equal(result.executed, false);
+    assert.ok(result.redactedSummary?.includes("not found"), `summary='${result.redactedSummary}'`);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+// Test 5 ─ execute network error: unreachable
+await test("ha_action execute: fetch throws returns executed=false and summary contains 'unreachable'", async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("ECONNREFUSED connect ECONNREFUSED 192.168.1.1:8123"); };
+  try {
+    const result = await runExec({
+      action: "ha_action",
+      entityId: "sensor.temp",
+      haAction: "read_state",
+      domain: "sensor",
+      service: "read_state",
+    });
+    assert.equal(result.executed, false);
+    assert.ok(result.redactedSummary?.includes("unreachable"), `summary='${result.redactedSummary}'`);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+// Test 6 ─ execute, no haToken: not configured
+await test("ha_action execute: no haToken returns executed=false and summary contains 'not configured'", async () => {
+  // Temporarily remove the token from the profile
+  upsertHaProfile({
+    id: haProfile.id,
+    name: haProfile.name,
+    endpoint: "http://ha.test:8123",
+    haMcpProfile: {},       // no token
+    configured: true,
+    entityAllowlist: haProfile.entityAllowlist,
+  });
+  try {
+    const result = await runExec({
+      action: "ha_action",
+      entityId: "sensor.temp",
+      haAction: "read_state",
+      domain: "sensor",
+      service: "read_state",
+    });
+    assert.equal(result.executed, false);
+    assert.ok(result.redactedSummary?.includes("not configured"), `summary='${result.redactedSummary}'`);
+  } finally {
+    // Restore token
+    upsertHaProfile({
+      id: haProfile.id,
+      name: haProfile.name,
+      endpoint: "http://ha.test:8123",
+      haMcpProfile: { token: "test-token-xyz" },
+      configured: true,
+      entityAllowlist: haProfile.entityAllowlist,
+    });
+  }
+});
+
+// Give the shared mqttProfile a real broker host so test 7 can reach the publish path
+upsertMqttProfile({
+  id: mqttProfile.id,
+  name: mqttProfile.name,
+  brokerHost: "mqtt.test",
+  brokerPort: 1883,
+  configured: true,
+  topicAllowlist: mqttProfile.topicAllowlist,
+});
+
+// Test 7 ─ mqtt execute: publish succeeds
+await test("mqtt_publish execute: publish succeeds returns executed=true", async () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mockClient: any = {
+    once(event: string, cb: (...args: unknown[]) => void) {
+      if (event === "connect") setImmediate(cb);
+      return mockClient;
+    },
+    publish(_topic: string, _msg: string, _opts: unknown, cb: (err?: Error | null) => void) {
+      setImmediate(() => cb(null));
+      return mockClient;
+    },
+    end() {},
+  };
+  _testOverrideMqttConnect(() => mockClient);
+  try {
+    const result = await runExec({
+      action: "mqtt_publish",
+      mqttTopic: "home/sensors/temp",
+      topic: "home/sensors/temp",
+      message: "22.5",
+    });
+    assert.equal(result.executed, true);
+    assert.equal(result.success, true);
+    assert.ok(result.redactedSummary?.includes("MQTT published"));
+  } finally {
+    // Restore real mqtt.connect
+    _testOverrideMqttConnect((url: string, opts: Record<string, unknown>) =>
+      mqtt.connect(url, opts as mqtt.IClientOptions));
+  }
+});
+
+// Test 8 ─ mqtt execute: no broker → not configured
+await test("mqtt_publish execute: no broker returns executed=false and summary contains 'not configured'", async () => {
+  // Temporarily clear the broker host
+  upsertMqttProfile({
+    id: mqttProfile.id,
+    name: mqttProfile.name,
+    brokerHost: "",
+    configured: false,
+    topicAllowlist: mqttProfile.topicAllowlist,
+  });
+  try {
+    const result = await runExec({
+      action: "mqtt_publish",
+      mqttTopic: "home/sensors/temp",
+      topic: "home/sensors/temp",
+      message: "test",
+    });
+    assert.equal(result.executed, false);
+    assert.ok(result.redactedSummary?.includes("not configured"), `summary='${result.redactedSummary}'`);
+  } finally {
+    // Restore broker
+    upsertMqttProfile({
+      id: mqttProfile.id,
+      name: mqttProfile.name,
+      brokerHost: "mqtt.test",
+      brokerPort: 1883,
+      configured: true,
+      topicAllowlist: mqttProfile.topicAllowlist,
+    });
+  }
+});
+
 console.log("\n✓ All Phase 14B home-autopilot tests passed\n");

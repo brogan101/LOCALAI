@@ -8,9 +8,8 @@
 import { createHash }  from "crypto";
 import { existsSync }  from "fs";
 import {
-  mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile,
+  mkdir, readFile, readdir, stat, writeFile,
 } from "fs/promises";
-import os   from "os";
 import path from "path";
 import ts   from "typescript";
 import { diffLines } from "diff";

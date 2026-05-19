@@ -420,4 +420,98 @@ router.post("/workspace/studio-presets", async (req, res) => {
   return res.json({ success: true, count: incoming.presets?.length || 0 });
 });
 
+
+// ── Git integration ───────────────────────────────────────────────────────────
+
+router.get("/workspace/git/status", async (req, res) => {
+  const workspacePath = typeof req.query["path"] === "string" ? req.query["path"] : undefined;
+  if (!workspacePath) return res.status(400).json({ success: false, message: "path required" });
+
+  try {
+    const { execCommand } = await import("../lib/runtime.js");
+    const [statusOut, branchOut, logOut, diffStatOut] = await Promise.allSettled([
+      execCommand("git status --short", 5000, workspacePath),
+      execCommand("git rev-parse --abbrev-ref HEAD", 3000, workspacePath),
+      execCommand("git log --oneline -10", 5000, workspacePath),
+      execCommand("git diff --stat HEAD", 5000, workspacePath),
+    ]);
+
+    const status = statusOut.status === "fulfilled" ? statusOut.value.stdout.trim() : "";
+    const branch = branchOut.status === "fulfilled" ? branchOut.value.stdout.trim() : "unknown";
+    const log = logOut.status === "fulfilled" ? logOut.value.stdout.trim() : "";
+    const diffStat = diffStatOut.status === "fulfilled" ? diffStatOut.value.stdout.trim() : "";
+
+    const changedFiles = status
+      .split("\n")
+      .filter(Boolean)
+      .map(line => ({ status: line.slice(0, 2).trim(), file: line.slice(3).trim() }));
+
+    const commits = log
+      .split("\n")
+      .filter(Boolean)
+      .map(line => {
+        const [hash, ...rest] = line.split(" ");
+        return { hash, message: rest.join(" ") };
+      });
+
+    return res.json({
+      success: true,
+      branch,
+      dirty: changedFiles.length > 0,
+      changedFiles,
+      commits,
+      diffStat,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: (err as Error).message });
+  }
+});
+
+router.post("/workspace/git/stage", agentEditsGuard("git stage files"), async (req, res) => {
+  const body = req.body as { path: string; files?: string[] };
+  if (!body.path) return res.status(400).json({ success: false, message: "path required" });
+
+  try {
+    const { execCommand } = await import("../lib/runtime.js");
+    const files = body.files?.length ? body.files.join(" ") : ".";
+    const { stdout, stderr } = await execCommand(`git add ${files}`, 10000, body.path);
+    return res.json({ success: true, stdout, stderr });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: (err as Error).message });
+  }
+});
+
+router.post("/workspace/git/commit", agentEditsGuard("git commit"), async (req, res) => {
+  const body = req.body as { path: string; message: string };
+  if (!body.path) return res.status(400).json({ success: false, message: "path required" });
+  if (!body.message?.trim()) return res.status(400).json({ success: false, message: "message required" });
+
+  try {
+    const { execCommand } = await import("../lib/runtime.js");
+    const { stdout, stderr } = await execCommand(
+      `git commit -m "${body.message.replace(/"/g, '\"')}"`,
+      15000,
+      body.path
+    );
+    return res.json({ success: true, stdout, stderr });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: (err as Error).message });
+  }
+});
+
+router.get("/workspace/git/diff", async (req, res) => {
+  const workspacePath = typeof req.query["path"] === "string" ? req.query["path"] : undefined;
+  const file = typeof req.query["file"] === "string" ? req.query["file"] : undefined;
+  if (!workspacePath) return res.status(400).json({ success: false, message: "path required" });
+
+  try {
+    const { execCommand } = await import("../lib/runtime.js");
+    const cmd = file ? `git diff HEAD -- "${file}"` : "git diff HEAD";
+    const { stdout } = await execCommand(cmd, 10000, workspacePath);
+    return res.json({ success: true, diff: stdout, file: file ?? null });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: (err as Error).message });
+  }
+});
+
 export default router;

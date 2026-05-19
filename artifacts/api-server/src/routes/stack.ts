@@ -17,6 +17,9 @@ import { writeManagedFile } from "../lib/snapshot-manager.js";
 import { agentEditsGuard, agentExecGuard } from "../lib/route-guards.js";
 
 const router = Router();
+
+let _stackCache: { data: unknown; at: number } | null = null;
+
 const HOME = os.homedir();
 const TOOLS_DIR = toolsRoot();
 
@@ -295,6 +298,7 @@ async function detectComponent(comp: ComponentDef): Promise<any> {
 }
 
 router.get("/stack/status", async (req, res) => {
+  if (_stackCache && Date.now() - _stackCache.at < 10_000) return res.json(_stackCache.data);
   try {
     const results = await Promise.all(COMPONENTS.map(detectComponent));
     const installed = results.filter((r) => r.installed).length;
@@ -303,7 +307,9 @@ router.get("/stack/status", async (req, res) => {
     const webuiReach = await fetchText("http://127.0.0.1:8080", undefined, 2500)
       .then(() => true)
       .catch(() => false);
-    return res.json({ components: results, ollamaReachable: ollamaReach, openWebUIReachable: webuiReach, healthScore });
+    const result = { components: results, ollamaReachable: ollamaReach, openWebUIReachable: webuiReach, healthScore };
+    _stackCache = { data: result, at: Date.now() };
+    return res.json(result);
   } catch (err: any) {
     (req as any).log?.error(err);
     return res.status(500).json({ components: [], ollamaReachable: false, openWebUIReachable: false, healthScore: 0 });

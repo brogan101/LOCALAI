@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useRef } from "react";
+import { useState } from "react";
 import {
-  CheckCircle, XCircle, Play, Square, Download, Pin, RefreshCw, ExternalLink, Info,
-  Monitor, MousePointer, Keyboard, Focus, Camera, Layers, AlertTriangle, Shield, Lock, FlaskConical, Code,
+  CheckCircle, Play, Square, Download, Pin, RefreshCw, ExternalLink, Info,
+  Monitor, MousePointer, Keyboard, Focus, Camera, Layers, Shield, Lock, FlaskConical, Code,
 } from "lucide-react";
-import api, { apiErrorMessage, type BrowserActionProposal, type BrowserSessionProfile, type ClawGatewayStatus, type CodingAgentStatus, type CodingTaskProposal, type DesktopActionProposal, type DesktopAutomationStatus, type DockerMcpGatewayStatus, type IntegrationEntry, type PlaywrightBrowserStatus, type ToolPermissionScope, type ToolRecord } from "../api.js";
+import api, { apiErrorMessage, type BrowserActionProposal, type ClawGatewayStatus, type CodingAgentStatus, type CodingTaskProposal, type DesktopActionProposal, type DesktopAutomationStatus, type DockerMcpGatewayStatus, type IntegrationEntry, type ToolPermissionScope, type ToolRecord } from "../api.js";
 import { PermissionNotice } from "../components/PermissionNotice.js";
 import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 

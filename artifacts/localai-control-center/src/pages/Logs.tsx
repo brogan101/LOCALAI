@@ -1,11 +1,30 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { RefreshCw, Filter, Radio, WifiOff, RotateCcw, ShieldAlert } from "lucide-react";
-import api, { apiErrorMessage, type LogLine, type ThoughtEntry, type ActivityEntry, type BackupEntry } from "../api.js";
+import { RefreshCw, Filter, Radio, WifiOff, RotateCcw } from "lucide-react";
+import api, { apiErrorMessage, type LogLine, type ThoughtEntry, type ActivityEntry } from "../api.js";
 import { PermissionNotice } from "../components/PermissionNotice.js";
 import { useAgentPermissions } from "../hooks/useAgentPermissions.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+// ── Logs page helpers ─────────────────────────────────────────────────────────
+
+const LOG_LEVELS = ["all", "info", "warning", "error", "debug"] as const;
+const LOG_CATEGORIES = ["all", "chat", "kernel", "stt", "tts", "model", "executor", "rag", "audit"] as const;
+
+function downloadAsText(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 
 function levelColor(level?: string) {
   if (!level) return "var(--color-muted)";
@@ -283,6 +302,8 @@ export default function LogsPage() {
   const [tab, setTab] = useState<Tab>("thoughts");
   const [source, setSource] = useState<"all" | "ollama" | "webui">("all");
   const [filter, setFilter] = useState("");
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Live thought log via SSE

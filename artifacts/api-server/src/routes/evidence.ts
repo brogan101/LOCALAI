@@ -25,6 +25,9 @@ import {
 
 const router = Router();
 
+let _papercache: { data: unknown; at: number } | null = null;
+let paperlessUrl: string | null = null;
+
 // GET /evidence/status
 router.get("/evidence/status", async (_req, res) => {
   try {
@@ -157,9 +160,14 @@ router.post("/evidence/records/:id/delete", async (req, res) => {
 
 // GET /evidence/paperless/status
 router.get("/evidence/paperless/status", async (_req, res) => {
+  if (!paperlessUrl && _papercache) return res.json(_papercache.data);
+  if (_papercache && Date.now() - _papercache.at < 30_000) return res.json(_papercache.data);
   try {
     const status = await evidenceVault.getPaperlessStatus();
-    return res.json({ success: true, paperless: status });
+    const result = { success: true, paperless: status };
+    paperlessUrl = status.baseUrl ?? null;
+    _papercache = { data: result, at: Date.now() };
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ success: false, error: String(err) });
   }

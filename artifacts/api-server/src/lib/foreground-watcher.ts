@@ -38,7 +38,6 @@ const _listeners: ForegroundListener[] = [];
 async function queryForegroundProcess(): Promise<string | null> {
   if (!isWindows) return null;
   try {
-    const ps = `(Get-Process -Id (Get-CimInstance Win32_Process | Where-Object { (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).MainWindowHandle -eq (Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();' -Name Win32 -Namespace Win32Functions -PassThru)::GetForegroundWindow() } | Select-Object -First 1 -ExpandProperty ProcessId) -ErrorAction SilentlyContinue).Name`;
     // Simpler PowerShell that reliably works:
     const simplePsScript = `
 $hwnd = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out uint processId);' -Name 'User32' -Namespace 'Win32' -PassThru 2>$null

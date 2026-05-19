@@ -25,7 +25,6 @@ import { sqlite } from "../db/database.js";
 import {
   recordAuditEvent,
   seedFoundationDefaults,
-  upsertPluginState,
 } from "./platform-foundation.js";
 import { createApprovalRequest } from "./approval-queue.js";
 import { redactForMissionReplay } from "./mission-replay.js";
@@ -169,17 +168,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function parseJsonSafe(value: unknown): Record<string, unknown> {
-  if (typeof value !== "string" || !value.trim()) return {};
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
+
 
 // ---------------------------------------------------------------------------
 // Default profiles — one per role, all not_configured until Ollama models set

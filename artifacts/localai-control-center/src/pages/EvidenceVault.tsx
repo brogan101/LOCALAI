@@ -13,7 +13,7 @@ import {
   Wrench, Wifi, Receipt, BookOpen, Loader2, ChevronDown, ChevronRight,
   Package,
 } from "lucide-react";
-import api, {
+import {
   apiErrorMessage,
   evidenceVaultApi,
   type EvidenceRecord,

@@ -96,17 +96,6 @@ export const PLAYWRIGHT_BROWSER_PROFILE_STATE_ID = "playwright-browser:profile";
 export const PLAYWRIGHT_BROWSER_SOURCE_OF_TRUTH =
   "Phase 09A Playwright browser session profile stored in plugin_state; browser actions evaluated by the Phase 07A tool-registry.ts firewall with hard limits on credential entry, anti-bot evasion, and cookie capture.";
 
-const ALL_NON_EMERGENCY_MODES: RuntimeMode[] = [
-  "Lightweight",
-  "Coding",
-  "Vision",
-  "Media",
-  "Business",
-  "Maker",
-  "HomeLab",
-  "HomeShop",
-];
-
 const BROWSER_COMPATIBLE_MODES: RuntimeMode[] = [
   "Coding",
   "Business",

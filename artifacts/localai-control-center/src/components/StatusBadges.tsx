@@ -8,7 +8,6 @@
  * duplicating inline badge logic.
  */
 
-import React from "react";
 import { AlertTriangle, Cloud, Server } from "lucide-react";
 
 // ── StatusPill ─────────────────────────────────────────────────────────────────

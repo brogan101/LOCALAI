@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { BriefcaseBusiness, CheckCircle, FileText, Lock, MessageSquareText, RefreshCw, ShieldAlert, Users } from "lucide-react";
@@ -97,6 +98,69 @@ function DraftRow({ draft, onPropose, busy }: { draft: BusinessDraft; onPropose:
           <Lock size={11} /> Propose
         </Btn>
       </div>
+    </div>
+  );
+}
+
+
+// ── Draft Executor Panel ─────────────────────────────────────────────────────
+
+function DraftExecutorPanel({ draftId, existingApprovalId }: { draftId: string; existingApprovalId?: string }) {
+  const [result, setResult] = useState<any>(null);
+  const [approvalId, setApprovalId] = useState(existingApprovalId ?? "");
+  const [busy, setBusy] = useState(false);
+
+  async function run(mode: "validate" | "dry_run" | "send") {
+    setBusy(true);
+    setResult(null);
+    try {
+      const url = mode === "send" ? "/api/business/executor/send"
+        : mode === "dry_run" ? "/api/business/executor/dry-run"
+        : "/api/business/executor/validate";
+      const body = mode === "send" ? { draftId, approvalId } : { draftId };
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setResult(await res.json());
+    } finally { setBusy(false); }
+  }
+
+  const btnBase = "text-xs px-2.5 py-1 rounded-lg disabled:opacity-40 flex items-center gap-1";
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap gap-1.5">
+        <button type="button" disabled={busy} onClick={() => run("validate")}
+          className={btnBase}
+          style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-muted)" }}>
+          ✓ Validate
+        </button>
+        <button type="button" disabled={busy} onClick={() => run("dry_run")}
+          className={btnBase}
+          style={{ background: "color-mix(in srgb, var(--color-info) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--color-info) 25%, transparent)", color: "var(--color-info)" }}>
+          ⚗ Dry Run
+        </button>
+        <button type="button" disabled={busy || !approvalId.trim()} onClick={() => run("send")}
+          className={btnBase}
+          style={{ background: "color-mix(in srgb, var(--color-warn) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warn) 25%, transparent)", color: "var(--color-warn)" }}>
+          ▶ Send
+        </button>
+      </div>
+      <input type="text" value={approvalId} onChange={e => setApprovalId(e.target.value)}
+        placeholder="Approval ID for real send (from Operations page)"
+        className="w-full text-xs rounded px-2.5 py-1.5"
+        style={{ background: "var(--color-elevated)", border: "1px solid var(--color-border)", color: "var(--color-foreground)", outline: "none" }} />
+      {result && (
+        <div className="text-xs p-2 rounded"
+          style={{
+            background: `color-mix(in srgb, ${result.success ? "var(--color-success)" : "var(--color-error)"} 8%, transparent)`,
+            color: result.success ? "var(--color-success)" : "var(--color-error)",
+            border: `1px solid color-mix(in srgb, ${result.success ? "var(--color-success)" : "var(--color-error)"} 20%, transparent)`,
+          }}>
+          {result.redactedSummary ?? result.message ?? JSON.stringify(result).slice(0, 200)}
+        </div>
+      )}
     </div>
   );
 }
@@ -256,12 +320,14 @@ export default function BusinessPage() {
           <div className="p-6 text-sm text-center" style={{ color: "var(--color-muted)" }}>No drafts</div>
         )}
         {drafts.map((draft) => (
-          <DraftRow
-            key={draft.id}
-            draft={draft}
-            onPropose={(id) => proposeMut.mutate(id)}
-            busy={proposeMut.isPending && proposeMut.variables === draft.id}
-          />
+          <Fragment key={draft.id}>
+            <DraftRow
+              draft={draft}
+              onPropose={(id) => proposeMut.mutate(id)}
+              busy={proposeMut.isPending && proposeMut.variables === draft.id}
+            />
+            <DraftExecutorPanel draftId={draft.id} existingApprovalId={(draft as any).approvalId} />
+          </Fragment>
         ))}
       </Card>
     </div>

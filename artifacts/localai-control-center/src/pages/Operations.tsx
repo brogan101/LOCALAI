@@ -6,7 +6,7 @@ import {
   Package, Shield, ChevronDown, ChevronRight, Loader2,
   History, Wrench, ArrowDownToLine, Monitor, Keyboard, MousePointer,
   Camera, Search, Clock, FileDiff, RotateCcw as Restore,
-  Database, Gamepad2, Power, Activity, ListChecks,
+  Database, Gamepad2, Power, Activity, ListChecks, FileText, ChevronUp,
 } from "lucide-react";
 import api, {
   apiErrorMessage,
@@ -1540,6 +1540,9 @@ function ApprovalPanel() {
                     {JSON.stringify(approval.result, null, 2)}
                   </pre>
                 )}
+                {(approval.jobId ?? (approval.result as any)?.jobId) && (
+                  <ProofBundleInline jobId={(approval.jobId ?? (approval.result as any).jobId) as string} />
+                )}
               </div>
             );
           })}
@@ -2084,6 +2087,72 @@ const TABS: Array<{ id: OpsTab; label: string }> = [
   { id: "osinterop",  label: "OS Interop" },
   { id: "timetravel", label: "Time Travel" },
 ];
+
+
+// ── Proof Bundle Viewer ───────────────────────────────────────────────────────
+
+function ProofBundleInline({ jobId }: { jobId: string }) {
+  const [open, setOpen] = useState(false);
+  const [manifest, setManifest] = useState<string[] | null>(null);
+  const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+
+  async function loadManifest() {
+    if (manifest !== null) { setOpen(o => !o); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/executions/${encodeURIComponent(jobId)}/proof`);
+      const data = await res.json();
+      setManifest(data.manifest ?? []);
+      setOpen(true);
+    } catch { setManifest([]); }
+    finally { setLoading(false); }
+  }
+
+  async function loadFile(filename: string) {
+    if (fileContents[filename] !== undefined) return;
+    try {
+      const res = await fetch(`/api/executions/${encodeURIComponent(jobId)}/proof/${encodeURIComponent(filename)}`);
+      const text = await res.text();
+      setFileContents(p => ({ ...p, [filename]: text }));
+    } catch { setFileContents(p => ({ ...p, [filename]: "(error loading file)" })); }
+  }
+
+  return (
+    <div className="mt-1.5">
+      <button type="button" onClick={loadManifest} disabled={loading}
+        className="flex items-center gap-1.5 text-xs px-2 py-1 rounded"
+        style={{ background: "color-mix(in srgb, var(--color-info) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--color-info) 25%, transparent)", color: "var(--color-info)", cursor: "pointer" }}>
+        <FileText size={10} />
+        {loading ? "Loading…" : open ? "Hide proof" : "View proof bundle"}
+        {open ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+      </button>
+      {open && manifest !== null && (
+        <div className="mt-1.5 rounded-lg overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
+          {manifest.length === 0
+            ? <div className="px-3 py-2 text-xs" style={{ color: "var(--color-muted)" }}>No proof files yet</div>
+            : manifest.map(filename => (
+              <div key={filename}>
+                <button type="button" onClick={() => loadFile(filename)}
+                  className="w-full text-left flex items-center gap-2 px-3 py-1.5 text-xs"
+                  style={{ background: "transparent", border: "none", borderBottom: "1px solid var(--color-border)", color: "var(--color-foreground)", cursor: "pointer", fontFamily: "var(--font-mono)" }}>
+                  <FileText size={10} style={{ color: "var(--color-muted)", flexShrink: 0 }} />
+                  {filename}
+                </button>
+                {fileContents[filename] !== undefined && (
+                  <pre className="text-xs px-3 py-2 overflow-auto max-h-32 m-0"
+                    style={{ background: "var(--color-elevated)", color: "var(--color-muted)", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", wordBreak: "break-all", borderBottom: "1px solid var(--color-border)" }}>
+                    {fileContents[filename].slice(0, 2000)}{fileContents[filename].length > 2000 ? "\n…(truncated)" : ""}
+                  </pre>
+                )}
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function OperationsPage() {
   const [tab, setTab] = useState<OpsTab>("stack");
